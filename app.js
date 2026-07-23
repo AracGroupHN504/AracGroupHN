@@ -31,18 +31,123 @@ let activeTF    = '1h';
 let activeTF_MS = TF_MS['1h'];
 
 /* ═══════════════════════════════════════
+   COLOR DE VELAS — configurable
+═══════════════════════════════════════ */
+const CANDLE_COLORS_DEFAULT = { up: '#26d994', down: '#ff5470' };
+let CANDLE_COLORS = { ...CANDLE_COLORS_DEFAULT };
+
+function hexToRgbaG(hex, alpha) {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+function darkenHex(hex, amt) {
+  const h = hex.replace('#', '');
+  const clamp = v => Math.max(0, Math.min(255, Math.round(v)));
+  const r = clamp(parseInt(h.substring(0, 2), 16) * (1 - amt));
+  const g = clamp(parseInt(h.substring(2, 4), 16) * (1 - amt));
+  const b = clamp(parseInt(h.substring(4, 6), 16) * (1 - amt));
+  return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+function applyCandleColorVars() {
+  document.documentElement.style.setProperty('--candle-up',   CANDLE_COLORS.up);
+  document.documentElement.style.setProperty('--candle-down', CANDLE_COLORS.down);
+}
+
+/* ═══════════════════════════════════════
    SESIONES — DEFAULTS
 ═══════════════════════════════════════ */
 const SESS_DEFAULTS = [
   { key:'sydney',   name:'Sydney',      color:'#38bdf8', colorBright:'#7dd3fc', startUtcH:23, endUtcH:31, solapStart:23, solapEnd:24, enabled:true },
-  { key:'tokyo',    name:'Tokio',       color:'#f59e0b', colorBright:'#fcd34d', startUtcH:0,  endUtcH:9,  solapStart:0,  solapEnd:9,  enabled:true },
+  { key:'tokyo',    name:'Tokio',       color:'#b13e3e', colorBright:'#cc8282', startUtcH:0,  endUtcH:9,  solapStart:0,  solapEnd:9,  enabled:true },
   { key:'london',   name:'Londres',     color:'#c084fc', colorBright:'#e879f9', startUtcH:7,  endUtcH:16, solapStart:9,  solapEnd:12, enabled:true },
   { key:'newyork',  name:'New York',    color:'#10b981', colorBright:'#34d399', startUtcH:12, endUtcH:21, solapStart:16, solapEnd:21, enabled:true },
   { key:'nomarket', name:'Sin mercado', color:'#3a3f47', colorBright:'#5a6272', startUtcH:21, endUtcH:23, solapStart:21, solapEnd:23, enabled:true },
 ];
 
-let VM_SESSIONS = SESS_DEFAULTS.map(s => ({ ...s }));
-let sessConfig  = SESS_DEFAULTS.map(s => ({ ...s }));
+/* Config estilo "captura" — Sydney/Londres/Sin mercado inactivas,
+   Tokio y New York activas con sus horas doradas propias. */
+const SESS_PRESET_1 = [
+  { key:'sydney',   name:'Sydney',      color:'#38bdf8', colorBright:'#7dd3fc', startUtcH:23, endUtcH:7,  solapStart:23, solapEnd:0,  enabled:false },
+  { key:'tokyo',    name:'Tokio',       color:'#b13e3e', colorBright:'#cc8282', startUtcH:23, endUtcH:9,  solapStart:0,  solapEnd:7,  enabled:true  },
+  { key:'london',   name:'Londres',     color:'#c084fc', colorBright:'#e879f9', startUtcH:7,  endUtcH:16, solapStart:9,  solapEnd:12, enabled:false },
+  { key:'newyork',  name:'New York',    color:'#10b981', colorBright:'#34d399', startUtcH:9,  endUtcH:21, solapStart:12, solapEnd:16, enabled:true  },
+  { key:'nomarket', name:'Sin mercado', color:'#3a3f47', colorBright:'#5a6272', startUtcH:21, endUtcH:23, solapStart:21, solapEnd:23, enabled:false },
+];
+
+/* ═══════════════════════════════════════
+   SESIONES — CONFIGURACIONES GUARDADAS (PRESETS)
+   Permite crear varias configuraciones de sesiones,
+   elegir cuál se usa y marcar cuál es la predeterminada.
+═══════════════════════════════════════ */
+const PRESETS_KEY = 'vm_terminal_sess_presets_v1';
+
+function clonePresetSessions(arr) { return arr.map(s => ({ ...s })); }
+
+function seedPresets() {
+  return [
+    { id: 'preset-1', name: 'Predeterminada 1', sessions: clonePresetSessions(SESS_PRESET_1) },
+    { id: 'preset-2', name: 'Predeterminada 2', sessions: clonePresetSessions(SESS_DEFAULTS) },
+  ];
+}
+
+function loadPresetsData() {
+  try {
+    const raw = localStorage.getItem(PRESETS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.presets) || !parsed.presets.length) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+
+const _presetsData   = loadPresetsData();
+let sessPresets       = _presetsData ? _presetsData.presets : seedPresets();
+let defaultPresetId   = (_presetsData && sessPresets.some(p => p.id === _presetsData.defaultPresetId))
+  ? _presetsData.defaultPresetId : sessPresets[0].id;
+let activePresetId    = (_presetsData && sessPresets.some(p => p.id === _presetsData.activePresetId))
+  ? _presetsData.activePresetId : defaultPresetId;
+
+function savePresetsData() {
+  try {
+    localStorage.setItem(PRESETS_KEY, JSON.stringify({ presets: sessPresets, defaultPresetId, activePresetId }));
+  } catch (e) { console.warn('[presets] No se pudo guardar:', e); }
+}
+if (!_presetsData) savePresetsData();
+
+/* Migración de una sola vez: si el navegador ya tenía guardado el preset
+   "preset-1" con horas viejas (de antes de este cambio de código), lo
+   reemplaza por los valores actuales de SESS_PRESET_1. Sin esto, un
+   "Restablecer" podía revivir horas desactualizadas guardadas de antes. */
+const PRESET1_SYNC_KEY = 'vm_terminal_preset1_sync_v2';
+if (_presetsData && !localStorage.getItem(PRESET1_SYNC_KEY)) {
+  const p1 = sessPresets.find(p => p.id === 'preset-1');
+  if (p1) p1.sessions = clonePresetSessions(SESS_PRESET_1);
+  savePresetsData();
+  try { localStorage.setItem(PRESET1_SYNC_KEY, '1'); } catch (e) {}
+}
+
+/* Migración de una sola vez: fuerza el nuevo color de Tokio (#b13e3e)
+   en todas las configuraciones ya guardadas, para que el cambio se vea
+   sin tener que borrar el localStorage o pulsar "Restaurar valores
+   originales". */
+const TOKYO_COLOR_SYNC_KEY = 'vm_terminal_tokyo_color_sync_v1';
+const _tokyoColorNeedsSync = !localStorage.getItem(TOKYO_COLOR_SYNC_KEY);
+if (_presetsData && _tokyoColorNeedsSync) {
+  sessPresets.forEach(p => {
+    const t = p.sessions.find(s => s.key === 'tokyo');
+    if (t) { t.color = '#b13e3e'; t.colorBright = '#cc8282'; }
+  });
+  savePresetsData();
+}
+try { localStorage.setItem(TOKYO_COLOR_SYNC_KEY, '1'); } catch (e) {}
+
+function getPresetById(id) { return sessPresets.find(p => p.id === id) || sessPresets[0]; }
+
+let VM_SESSIONS = clonePresetSessions(getPresetById(activePresetId).sessions).filter(s => s.enabled);
+let sessConfig  = clonePresetSessions(getPresetById(activePresetId).sessions);
 
 /* ═══════════════════════════════════════
    ESTADO
@@ -53,11 +158,34 @@ let rawCandles = [];
 let candles    = [];
 let camX       = -1;
 let snapToEnd  = true;
+let isLoadingMore  = false;   // true mientras se está pidiendo historial extra hacia atrás
+let noMoreHistory  = false;   // true cuando Binance ya no tiene velas más antiguas
 let zoomLevel  = 1.0;
 let isDragging = false, dragStartX = 0, dragStartCamX = 0;
+let dragStartY = 0, dragStartPriceMin = 0, dragStartPriceMax = 0;
 let mouseX = -1, mouseY = -1;
 let lastPrice  = 0;
 let rulerMode  = false, rulerActive = false, rulerLocked = false;
+let rulerTempActive = false; // true si la regla se activó sosteniendo click derecho (se apaga sola al soltar)
+
+// ── Escala de precio manual (drag vertical en el eje de precio, estilo TradingView) ──
+let manualScale     = false;  // true = usuario ajustó manualmente, se desactiva el auto-fit
+let manualPriceMin  = 0, manualPriceMax = 0;
+let isPriceDragging = false;
+let priceDragStartY = 0, priceDragBaseMin = 0, priceDragBaseMax = 0;
+// Última escala calculada en el draw más reciente (para que los handlers de mouse la lean)
+let lastPriceMin = 0, lastPriceMax = 0, lastPADR = 84, lastPADT = 18, lastChartH = 0;
+let lastTimeBarY = 0, lastPADB = 36, lastPADL = 8, lastW = 0;
+
+// ── Zoom horizontal manual (drag en el eje de tiempo, estilo TradingView) ──
+let isTimeDragging  = false;
+let timeDragStartX  = 0, timeDragStartMx = 0, timeDragBaseZoom = 1, timeDragBaseCamX = 0;
+let _drawScheduled = false;
+function scheduleDraw() {
+  if (_drawScheduled) return;
+  _drawScheduled = true;
+  requestAnimationFrame(() => { _drawScheduled = false; draw(); });
+}
 let rulerStartX = -1, rulerStartY = -1, rulerEndX = -1, rulerEndY = -1;
 let rulerStartIdx = -1, rulerEndIdx = -1;
 
@@ -71,6 +199,98 @@ let panelResizeStartY = 0, panelResizeStartRatio = 0;
 let wsLastMsg = 0;
 
 /* ═══════════════════════════════════════
+   PERSISTENCIA — localStorage
+   Guarda: símbolo, temporalidad, días, sesiones,
+   indicadores activos (y sus parámetros).
+═══════════════════════════════════════ */
+const STORAGE_KEY = 'vm_terminal_state_v1';
+let _saveStateTimer = null;
+
+function saveState() {
+  // Pequeño debounce para no saturar localStorage con inputs tipo range/number
+  clearTimeout(_saveStateTimer);
+  _saveStateTimer = setTimeout(() => {
+    try {
+      const state = {
+        symbol, daysCount, chartMode, activeTF,
+        sessConfig,
+        candleColors: CANDLE_COLORS,
+        panelHeightRatio,
+        indicators: (window.INDICATORS ? window.INDICATORS.getActive() : [])
+          .map(a => ({ id: a.def.id, params: a.params })),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (e) { console.warn('[state] No se pudo guardar:', e); }
+  }, 150);
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+
+/* Aplica el estado guardado ANTES del primer fetchCandles() */
+function applySavedState() {
+  const st = loadState();
+  if (!st) return;
+
+  if (st.symbol)                        symbol    = st.symbol;
+  if (Number.isFinite(st.daysCount))    daysCount = st.daysCount;
+  if (st.chartMode) {
+    chartMode   = st.chartMode;
+    activeTF    = st.activeTF || st.chartMode;
+    activeTF_MS = TF_MS[activeTF] || TF_MS['15m'];
+  }
+  if (Array.isArray(st.sessConfig) && st.sessConfig.length) {
+    sessConfig  = st.sessConfig.map(s => ({ ...s }));
+    if (_tokyoColorNeedsSync) {
+      const t = sessConfig.find(s => s.key === 'tokyo');
+      if (t) { t.color = '#b13e3e'; t.colorBright = '#cc8282'; }
+    }
+    VM_SESSIONS = sessConfig.filter(s => s.enabled).map(s => ({ ...s }));
+  }
+  if (st.candleColors && st.candleColors.up && st.candleColors.down) {
+    CANDLE_COLORS = { up: st.candleColors.up, down: st.candleColors.down };
+  }
+  applyCandleColorVars();
+  if (Number.isFinite(st.panelHeightRatio)) panelHeightRatio = st.panelHeightRatio;
+
+  // Reflejar en la UI
+  const symEl = document.getElementById('sym-input');
+  if (symEl) symEl.value = symbol;
+  const daysSel = document.getElementById('days-select');
+  if (daysSel) {
+    daysSel.value = String(daysCount);
+    // Si el valor guardado no coincide con ninguna <option> (por estados
+    // viejos guardados antes de este arreglo), el <select> queda en
+    // blanco. En ese caso, se ajusta a la opción disponible más cercana.
+    if (daysSel.value !== String(daysCount)) {
+      const opts = [...daysSel.options].map(o => parseInt(o.value, 10));
+      const closest = opts.reduce((a, b) =>
+        Math.abs(b - daysCount) < Math.abs(a - daysCount) ? b : a, opts[0]);
+      daysCount = closest;
+      daysSel.value = String(closest);
+    }
+  }
+  document.querySelectorAll('.tf-pill').forEach(b => {
+    b.classList.toggle('active', b.dataset.tf === chartMode);
+  });
+  if (typeof updateFooter === 'function') updateFooter();
+  if (typeof updateLegend === 'function') updateLegend();
+
+  // Restaurar indicadores activos (indicators.js ya registró todos los defs)
+  if (Array.isArray(st.indicators) && window.INDICATORS) {
+    st.indicators.forEach(({ id, params }) => {
+      if (window.INDICATORS.getAll().some(d => d.id === id)) {
+        window.INDICATORS.activate(id, params);
+      }
+    });
+  }
+}
+
+/* ═══════════════════════════════════════
    DOM
 ═══════════════════════════════════════ */
 const cv      = document.getElementById('cv');
@@ -78,9 +298,36 @@ const ctx     = cv.getContext('2d');
 const wrap    = document.getElementById('chart-wrap');
 const loading = document.getElementById('loading');
 const errEl   = document.getElementById('err');
+const jumpLatestBtn = document.getElementById('jump-latest-btn');
+
+// Guardan el último maxCam/step calculados en draw(), para saber si el
+// usuario se alejó de la vela más reciente (botón estilo TradingView).
+let lastMaxCamG = 0, lastStepG = 1;
+function updateJumpLatestBtn() {
+  if (!jumpLatestBtn) return;
+  const awayFromEnd = candles.length && camX < lastMaxCamG - lastStepG * 2;
+  jumpLatestBtn.classList.toggle('show', !!awayFromEnd);
+}
+if (jumpLatestBtn) {
+  jumpLatestBtn.addEventListener('click', () => {
+    snapToEnd = true;
+    draw();
+  });
+}
 const wsDot   = document.getElementById('ws-dot');
 const wsLbl   = document.getElementById('ws-label');
 const rulerBtn = document.getElementById('ruler-btn');
+const chartResetBtn = document.getElementById('reset-btn');
+chartResetBtn.addEventListener('click', () => {
+  const ok = confirm('Esto restablece el zoom, la escala del gráfico y toda la configuración guardada (símbolo, sesiones, colores, indicadores activos), volviendo a los valores originales del código. ¿Continuar?');
+  if (!ok) return;
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(PRESETS_KEY);
+    localStorage.removeItem(PRESET1_SYNC_KEY);
+  } catch (e) { console.warn('[reset] No se pudo limpiar localStorage:', e); }
+  location.reload();
+});
 
 /* ═══════════════════════════════════════
    FORMATTERS
@@ -335,17 +582,26 @@ function buildCandles() {
 
 
 async function fetchCandles() {
-  const loadEl = document.getElementById('loading');
+  const loadEl = document.getElementById('loading-text');
   loadEl.textContent = 'Cargando datos...';
   loading.style.display = 'flex';
   errEl.style.display   = 'none';
   closeWS();
   rawCandles = [];
   candles    = [];
+  noMoreHistory = false;
+  manualScale = false; // nuevo símbolo/TF/rango → volver a auto-ajuste vertical
 
   try {
     const CHUNK    = 1500;
-    let curStart   = Date.now() - daysCount * 24 * 60 * 60 * 1000;
+    // Blindaje: si daysCount llegó corrupto (NaN, negativo, o un número
+    // enorme heredado de un estado viejo guardado), Binance responde
+    // HTTP 400 porque el startTime calculado queda inválido (negativo o
+    // antes de época). Se acota a un rango razonable sin tocar el valor
+    // que se ve en el <select> (eso ya se resuelve en applySavedState).
+    const safeDays = Number.isFinite(daysCount) ? Math.min(Math.max(daysCount, 1), 365) : 30;
+    const startG   = Date.now() - safeDays * 24 * 60 * 60 * 1000;
+    let curStart   = startG;
     const endG     = Date.now();
     let allData    = [], ci = 0;
 
@@ -354,7 +610,8 @@ async function fetchCandles() {
 
     while (curStart < endG) {
       ci++;
-      loadEl.textContent = `Cargando datos... bloque ${ci}`;
+      const pct = Math.min(99, Math.round(((curStart - startG) / (endG - startG)) * 100));
+      loadEl.textContent = `Cargando datos... ${pct}%`;
       const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${fetchTF}&limit=${CHUNK}&startTime=${curStart}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -364,6 +621,7 @@ async function fetchCandles() {
       curStart = +data[data.length - 1][0] + fetchTFMS;
       if (data.length < CHUNK) break;
     }
+    loadEl.textContent = 'Cargando datos... 100%';
 
     const seen = new Set();
     rawCandles = allData
@@ -385,6 +643,66 @@ async function fetchCandles() {
     loadEl.textContent = 'Cargando datos...';
     errEl.style.display = 'block';
     errEl.textContent = '⚠️ Error: ' + e.message;
+  }
+}
+
+/* ═══════════════════════════════════════
+   CARGAR MÁS HISTORIAL (hacia atrás)
+   Se dispara solo cuando el usuario se acerca al borde
+   izquierdo del gráfico, para que nunca se quede sin datos.
+═══════════════════════════════════════ */
+async function loadMoreHistory() {
+  if (isLoadingMore || noMoreHistory || !rawCandles.length) return;
+  isLoadingMore = true;
+  try {
+    const CHUNK     = 1500;
+    const fetchTF   = TF_BINANCE[chartMode] || activeTF;
+    const fetchTFMS = TF_MS[fetchTF] || activeTF_MS;
+    const oldestT   = rawCandles[0].t;
+    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${fetchTF}&limit=${CHUNK}&endTime=${oldestT - 1}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if (!data.length) { noMoreHistory = true; return; }
+
+    const seen = new Set(rawCandles.map(c => c.t));
+    const older = data
+      .map(d => ({ t:+d[0], o:+d[1], h:+d[2], l:+d[3], c:+d[4], v:+d[5], closed: true }))
+      .filter(c => !seen.has(c.t))
+      .sort((a, b) => a.t - b.t);
+
+    if (!older.length) { noMoreHistory = true; return; }
+
+    const prevCandleCount = candles.length;
+    rawCandles = older.concat(rawCandles);
+    // Tope de seguridad para no crecer sin límite en sesiones muy largas
+    // (se recorta por el lado viejo, conservando siempre lo más reciente)
+    if (rawCandles.length > 60000) rawCandles = rawCandles.slice(rawCandles.length - 60000);
+    window.rawCandles = rawCandles;
+    // OJO: no tocar `daysCount` aquí. Esa variable está atada al <select>
+    // "Días" (y se persiste en localStorage); si se pisaba con el rango
+    // real ya cargado (ej. 47, 132...) terminaba guardando un valor que
+    // no coincide con ninguna <option>, y al recargar la página el
+    // <select> se quedaba en blanco. El scroll hacia atrás sigue
+    // cargando historial normalmente sin necesidad de mutarla.
+
+    buildCandles();
+
+    // Mantener la vista donde estaba: como se agregaron velas al inicio,
+    // hay que compensar camX para que no "salte" el gráfico
+    const addedCount = candles.length - prevCandleCount;
+    if (addedCount > 0) {
+      const W2    = cv.width / devicePixelRatio;
+      const vis   = candles.length;
+      const bw2   = Math.max(1, Math.min(200, ((W2 - 8 - 84) / Math.min(vis, 500)) * zoomLevel));
+      const step2 = bw2 + Math.max(1, bw2 * 0.15);
+      camX += addedCount * step2;
+    }
+  } catch (e) {
+    console.error('[loadMoreHistory]', e);
+  } finally {
+    isLoadingMore = false;
+    draw();
   }
 }
 
@@ -541,6 +859,7 @@ function draw() {
   if (snapToEnd || camX < 0) { camX = maxCam; if (candles.length) snapToEnd = false; }
   if (camX >= maxCam - step * 2) camX = maxCam;
   camX = Math.max(0, Math.min(maxCam, camX));
+  lastMaxCamG = maxCam; lastStepG = step;
 
   const startIdx = Math.max(0, Math.floor(camX / step));
   const visCount = Math.ceil((W - PADL - PADR) / step) + 2;
@@ -548,13 +867,23 @@ function draw() {
   const slice    = candles.slice(startIdx, endIdx + 1);
   if (!slice.length) return;
 
+  // Cerca del borde izquierdo → pedir más historial antes de que el usuario lo alcance
+  if (startIdx < 150 && !isLoadingMore && !noMoreHistory) loadMoreHistory();
+
   let lo = Infinity, hi = -Infinity;
   for (let i = 0; i < slice.length; i++) { if (slice[i].l < lo) lo = slice[i].l; if (slice[i].h > hi) hi = slice[i].h; }
   const pd = (hi - lo) * 0.07 || lo * 0.01 || 1;
-  const priceMin = lo - pd, priceMax = hi + pd;
+  const autoMin = lo - pd, autoMax = hi + pd;
+  const priceMin = manualScale ? manualPriceMin : autoMin;
+  const priceMax = manualScale ? manualPriceMax : autoMax;
   const pxPer = chartH / (priceMax - priceMin);
   const py    = price => PADT + chartH - (price - priceMin) * pxPer;
   const barX  = idx   => PADL + idx * step - camX;
+
+  // Guardar para que mousedown/mousemove puedan leer la escala vigente
+  lastPriceMin = priceMin; lastPriceMax = priceMax;
+  lastPADR = PADR; lastPADT = PADT; lastChartH = chartH;
+  lastTimeBarY = timeBarY; lastPADB = PADB; lastPADL = PADL; lastW = W;
 
   // Fondo
   ctx.fillStyle = '#0b0e11';
@@ -573,11 +902,6 @@ function draw() {
     const dk  = `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
     const mo  = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][d.getUTCMonth()];
     const isNewDay = dk !== lastDayKey;
-
-    if (isNewDay && lastDayKey !== '') {
-      ctx.strokeStyle = '#3a3f4799'; ctx.lineWidth = 0.8;
-      ctx.beginPath(); ctx.moveTo(x + barW/2, PADT); ctx.lineTo(x + barW/2, timeBarY); ctx.stroke();
-    }
 
     if (isNewDay && x > PADL && x < W - PADR - 20 && x - lastLabelX > MIN_LABEL_GAP) {
       lastDayKey  = dk;
@@ -617,6 +941,18 @@ function draw() {
   ctx.font = '10px monospace'; ctx.fillStyle = '#3a3f4799'; ctx.textAlign = 'right';
   ctx.fillText(`🔍 ${zoomLevel.toFixed(2)}x`, W - PADR - 6, PADT + 14);
 
+  // Indicador de escala de precio manual (doble clic en el eje para volver a auto)
+  if (manualScale) {
+    ctx.font = '10px monospace'; ctx.fillStyle = '#f0b90bcc'; ctx.textAlign = 'right';
+    ctx.fillText('🔒 Escala manual (doble clic para auto-ajustar)', W - PADR - 6, PADT + 28);
+  }
+
+  // Indicador sutil: cargando más historial hacia atrás
+  if (isLoadingMore) {
+    ctx.font = '10px sans-serif'; ctx.fillStyle = '#f0b90bcc'; ctx.textAlign = 'left';
+    ctx.fillText('⏳ Cargando historial…', PADL + 6, PADT + 14);
+  }
+
   // Velas de sesión
   slice.forEach((c, i) => {
     const xi = startIdx + i, x = barX(xi);
@@ -626,45 +962,25 @@ function draw() {
     const bodyTop = Math.min(yo, yc);
     const bodyH   = Math.max(1, Math.abs(yc - yo));
 
-    if (c.isNoMarket) {
-      if (xi === hoveredIdx) { ctx.fillStyle = '#ffffff08'; ctx.fillRect(x - gap/2, PADT, barW + gap, chartH); }
-      ctx.fillStyle = '#2b2f3633';
-      ctx.fillRect(x, PADT, barW, chartH);
-      ctx.strokeStyle = '#5a627266'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(midX, yh); ctx.lineTo(midX, yl); ctx.stroke();
-      if (bodyH > 1) {
-        ctx.fillStyle = '#3a3f4799';
-        ctx.fillRect(x, bodyTop, barW, bodyH);
-      }
-      ctx.strokeStyle = '#5a627299'; ctx.lineWidth = 1;
-      ctx.strokeRect(x, bodyTop, barW, bodyH);
-      if (barW > 10) {
-        ctx.fillStyle = '#848e9c66';
-        ctx.font = `bold ${Math.min(10, barW * 0.6)}px sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.fillText('–', midX, bodyTop + bodyH/2 + 3);
-      }
-      return;
-    }
-
     const bull   = c.c >= c.o;
-    const col    = c.color || (bull ? '#26d994' : '#ff5470');
+    const upCol  = CANDLE_COLORS.up, dnCol = CANDLE_COLORS.down;
+    const col    = c.color || (bull ? upCol : dnCol);
 
-    if (!c.closed)         { ctx.fillStyle = bull ? '#26d99412' : '#ff547012'; ctx.fillRect(x - gap/2, PADT, barW + gap, chartH); }
+    if (!c.closed)         { ctx.fillStyle = hexToRgbaG(bull ? upCol : dnCol, 0.07); ctx.fillRect(x - gap/2, PADT, barW + gap, chartH); }
     if (xi === hoveredIdx) { ctx.fillStyle = '#ffffff10'; ctx.fillRect(x - gap/2, PADT, barW + gap, chartH); }
 
-    ctx.strokeStyle = bull ? '#26d994' : '#ff5470'; ctx.lineWidth = 1.5;
+    ctx.strokeStyle = bull ? upCol : dnCol; ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.moveTo(midX, yh); ctx.lineTo(midX, bodyTop); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(midX, bodyTop + bodyH); ctx.lineTo(midX, yl); ctx.stroke();
 
     if (bodyH > 1) {
       const grad = ctx.createLinearGradient(x, bodyTop, x, bodyTop + bodyH);
-      if (bull) { grad.addColorStop(0, '#26d99499'); grad.addColorStop(1, '#00b86566'); }
-      else       { grad.addColorStop(0, '#ff546688'); grad.addColorStop(1, '#cc1f3d99'); }
+      if (bull) { grad.addColorStop(0, hexToRgbaG(upCol, 0.6)); grad.addColorStop(1, hexToRgbaG(darkenHex(upCol, 0.3), 0.4)); }
+      else       { grad.addColorStop(0, hexToRgbaG(dnCol, 0.53)); grad.addColorStop(1, hexToRgbaG(darkenHex(dnCol, 0.2), 0.6)); }
       ctx.fillStyle = grad;
       ctx.fillRect(x, bodyTop, barW, bodyH);
     }
-    ctx.strokeStyle = bull ? '#26d994' : '#ff5470'; ctx.lineWidth = 1.5;
+    ctx.strokeStyle = bull ? upCol : dnCol; ctx.lineWidth = 1.5;
     ctx.strokeRect(x, bodyTop, barW, bodyH);
   });
 
@@ -743,7 +1059,7 @@ function draw() {
   // Línea último precio
   const last  = candles[candles.length - 1];
   const lastY = py(last.c);
-  const lineCol = last.c >= last.o ? '#26d994' : '#ff5470';
+  const lineCol = last.c >= last.o ? CANDLE_COLORS.up : CANDLE_COLORS.down;
   ctx.strokeStyle = lineCol + '55'; ctx.lineWidth = 0.8; ctx.setLineDash([4, 3]);
   ctx.beginPath(); ctx.moveTo(PADL, lastY); ctx.lineTo(W - PADR, lastY); ctx.stroke();
   ctx.setLineDash([]);
@@ -786,19 +1102,42 @@ function draw() {
         const d = tsToLocal(ts);
         return String(d.getUTCHours()).padStart(2,'0') + ':' + String(d.getUTCMinutes()).padStart(2,'0');
       }
-      const sessCol = hc.color || (bull2 ? '#26d994' : '#ff5470');
+      // Duración legible entre apertura y cierre: si pasa de 24h se
+      // expresa en días + horas ("1 día y 6 horas"), si no en horas/min.
+      function fmtDuracion(ms) {
+        if (!ms || ms < 0) return '';
+        const totalMin = Math.round(ms / 60000);
+        const dias  = Math.floor(totalMin / 1440);
+        const horas = Math.floor((totalMin % 1440) / 60);
+        const mins  = totalMin % 60;
+        if (dias > 0) {
+          let s = dias + (dias === 1 ? ' día' : ' días');
+          if (horas > 0) s += ' y ' + horas + (horas === 1 ? ' hora' : ' horas');
+          return s;
+        }
+        if (horas > 0) {
+          let s = horas + (horas === 1 ? ' hora' : ' horas');
+          if (mins > 0) s += ' ' + mins + 'm';
+          return s;
+        }
+        return mins + ' min';
+      }
+      const sessCol = hc.color || (bull2 ? CANDLE_COLORS.up : CANDLE_COLORS.down);
+      const durTxt = fmtDuracion(hc.tClose - hc.t);
       const rows = [
         { label: null, val: (hc.sessionName||tvLabel(hc.t))+(hc.isSolape?' ⚡':''), hora:null, color:sessCol,  bold:true,  size:11 },
-        { label: null, val: tvLabel(hc.t) + ' → ' + fmtHora(hc.tClose),             hora:null, color:'#848e9c',bold:false, size:10 },
+        { label: null, val: tvLabel(hc.t) + ' → ' + fmtHora(hc.tClose) + (durTxt ? '  (' + durTxt + ')' : ''), hora:null, color:'#848e9c',bold:false, size:10 },
         { label: 'A:',  val: fmtPrice(hc.o), hora:fmtHora(hc.t),       color:'#eaecef',                        bold:false, size:11 },
-        { label: 'C:',  val: fmtPrice(hc.c), hora:fmtHora(hc.tClose),  color:bull2?'#26d994':'#ff5470',        bold:false, size:11 },
-        { label: 'Mx:', val: fmtPrice(hc.h), hora:fmtHora(hc.tHigh),  color:'#26d994',                        bold:false, size:11 },
-        { label: 'Mn:', val: fmtPrice(hc.l), hora:fmtHora(hc.tLow),   color:'#ff5470',                        bold:false, size:11 },
+        { label: 'C:',  val: fmtPrice(hc.c), hora:fmtHora(hc.tClose),  color:bull2?CANDLE_COLORS.up:CANDLE_COLORS.down,        bold:false, size:11 },
+        { label: 'Mx:', val: fmtPrice(hc.h), hora:fmtHora(hc.tHigh),  color:CANDLE_COLORS.up,                        bold:false, size:11 },
+        { label: 'Mn:', val: fmtPrice(hc.l), hora:fmtHora(hc.tLow),   color:CANDLE_COLORS.down,                        bold:false, size:11 },
         { label: 'V:',  val: fmtVol(hc.v),   hora:null,                color:'#848e9c',                        bold:false, size:11 },
       ];
       if (!hc.closed) rows.push({ label:null, val:'● En vivo', hora:null, color:'#f0b90b', bold:true, size:11 });
 
-      const LH = 17, PAD = 10, tw3 = 230;
+      ctx.font = '10px sans-serif';
+      const rangeRowW = ctx.measureText(rows[1].val).width;
+      const LH = 17, PAD = 10, tw3 = Math.max(230, rangeRowW + PAD * 2 + 4);
       const th3 = rows.length * LH + PAD * 2 - 2;
       let tx3 = mouseX + 14, ty4 = mouseY - th3/2;
       if (tx3 + tw3 > W - PADR) tx3 = mouseX - tw3 - 14;
@@ -834,7 +1173,7 @@ function draw() {
     const i1 = rulerStartIdx >= 0 ? rulerStartIdx : Math.round((rx1 - PADL + camX) / step);
     const i2 = rulerEndIdx   >= 0 ? rulerEndIdx   : Math.round((rx2 - PADL + camX) / step);
     const nBars = Math.abs(i2 - i1);
-    const col   = pDiff >= 0 ? '#26d994' : '#ff5470';
+    const col   = pDiff >= 0 ? CANDLE_COLORS.up : CANDLE_COLORS.down;
     const sign  = pDiff >= 0 ? '+' : '';
     const c1 = candles[Math.min(Math.max(i1, 0), candles.length - 1)];
     const c2 = candles[Math.min(Math.max(i2, 0), candles.length - 1)];
@@ -923,25 +1262,221 @@ function draw() {
       ty2 += size + 5;
     });
   }
+
+  updateJumpLatestBtn();
 }
 
 /* ═══════════════════════════════════════
    EVENTOS UI
 ═══════════════════════════════════════ */
 const symInput = document.getElementById('sym-input');
+
+/* ── Resolución automática de símbolo ──────────────────────────────
+   Deja escribir "BONK", "BONKUSDT" o "1000BONK" y arma el símbolo real
+   de Binance Futures (ej. "1000BONKUSDT") usando el listado oficial
+   (exchangeInfo), porque muchas monedas solo cotizan con un prefijo
+   multiplicador (1000, 1000000, etc.) que nadie se acuerda de escribir. */
+let ALL_SYMBOLS = [];               // [{ symbol, baseAsset, quoteAsset }]
+let symbolSet   = new Set();
+let coreIndex   = new Map();        // "CORE|QUOTE" → [symbols], más corto primero
+
+async function loadExchangeSymbols() {
+  try {
+    const r = await fetch('https://fapi.binance.com/fapi/v1/exchangeInfo');
+    const j = await r.json();
+    const list = (j.symbols || []).filter(s => s.status === 'TRADING');
+    ALL_SYMBOLS = list.map(s => ({ symbol: s.symbol, baseAsset: s.baseAsset, quoteAsset: s.quoteAsset }));
+    symbolSet = new Set(ALL_SYMBOLS.map(s => s.symbol));
+    coreIndex = new Map();
+    ALL_SYMBOLS.forEach(({ symbol, baseAsset, quoteAsset }) => {
+      const core = baseAsset.replace(/^\d+/, '') || baseAsset; // "1000BONK" → "BONK"
+      const key  = core + '|' + quoteAsset;
+      if (!coreIndex.has(key)) coreIndex.set(key, []);
+      coreIndex.get(key).push(symbol);
+    });
+    coreIndex.forEach(arr => arr.sort((a, b) => a.length - b.length)); // sin prefijo primero
+  } catch (e) {
+    console.warn('No se pudo cargar exchangeInfo (resolución automática de símbolo limitada):', e);
+  }
+}
+loadExchangeSymbols();
+
+const QUOTE_ASSETS = ['USDT', 'USDC', 'BUSD', 'USD'];
+
+function resolveSymbolInput(raw) {
+  const s = (raw || '').trim().toUpperCase().replace(/\s+/g, '');
+  if (!s) return null;
+  if (symbolSet.has(s)) return s;             // ya es un símbolo válido tal cual
+
+  // separar quote (si el usuario lo escribió) del base
+  let quote = 'USDT', base = s;
+  for (const q of QUOTE_ASSETS) {
+    if (s.length > q.length && s.endsWith(q)) { quote = q; base = s.slice(0, -q.length); break; }
+  }
+
+  // intento directo: lo que escribió + el quote, tal cual (cubre "1000BONK" → "1000BONKUSDT")
+  const direct = base + quote;
+  if (symbolSet.has(direct)) return direct;
+
+  // buscar por el "core" del activo sin prefijo numérico (cubre "BONK" → "1000BONKUSDT")
+  const core = base.replace(/^\d+/, '');
+  if (!core) return null;
+  const matches = coreIndex.get(core + '|' + quote);
+  if (matches && matches.length) return matches[0]; // ya viene ordenado: sin prefijo primero
+
+  return null; // sin match conocido — se deja lo escrito y que el fetch avise si no existe
+}
+
 function applySymbol() {
-  const val = symInput.value.trim().toUpperCase();
-  if (!val) return;
-  symInput.value = val;
-  symbol = val;
+  const raw = symInput.value.trim().toUpperCase();
+  if (!raw) return;
+  const resolved = resolveSymbolInput(raw) || raw;
+  symInput.value = resolved;
+  symbol = resolved;
   fetchCandles();
+  saveState();
 }
 symInput.addEventListener('change', applySymbol);
-symInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); applySymbol(); } });
+
+/* ── Desplegable propio de monedas (reemplaza el <datalist> nativo,
+      que en móvil abría con animación doble y filtraba mal) ── */
+const CURATED_SYMBOLS = [
+  'BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','DOGEUSDT',
+  'AVAXUSDT','LTCUSDT','LINKUSDT','MATICUSDT','DOTUSDT','UNIUSDT','NEARUSDT',
+  'ATOMUSDT','WLDUSDT','APTUSDT','ARBUSDT','OPUSDT','INJUSDT','SUIUSDT',
+  'PEPEUSDT','WIFUSDT','JUPUSDT','ONDOUSDT',
+];
+const symDropdown = document.getElementById('sym-dropdown');
+const symArrowBtn = document.getElementById('sym-arrow');
+let symPrevValue = symInput.value;
+let symHlIdx = -1;
+
+function hashHue(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
+  return h < 0 ? h + 360 : h;
+}
+function splitSymbolDisplay(sym) {
+  let quote = 'USDT';
+  for (const q of QUOTE_ASSETS) { if (sym.length > q.length && sym.endsWith(q)) { quote = q; break; } }
+  const base = sym.slice(0, sym.length - quote.length);
+  const m = base.match(/^(\d+)/);
+  const prefix = m ? m[1] : null;
+  const core = prefix ? base.slice(prefix.length) : base;
+  return { core: core || base, quote, prefix };
+}
+/* CDN con logos reales de monedas (mismo set que usa Binance). Si una
+   moneda no está en el listado, la imagen falla y se hace fallback
+   automático al círculo de color con la inicial (comportamiento previo). */
+const COIN_ICON_CDN = 'https://cdn.jsdelivr.net/gh/prasangapokharel/crypto-icons@v1.0.0/binance/';
+function symOptionHTML(sym) {
+  const { core, quote, prefix } = splitSymbolDisplay(sym);
+  const hue = hashHue(core);
+  const iconUrl = COIN_ICON_CDN + encodeURIComponent(core.toUpperCase()) + '.png';
+  return `
+    <div class="sym-opt" data-sym="${sym}">
+      <span class="sym-badge" style="background:hsl(${hue} 55% 20%); color:hsl(${hue} 85% 68%);">
+        <img src="${iconUrl}" alt="" loading="lazy" onerror="this.remove();" />
+        <span class="sym-badge-fallback">${core.charAt(0) || '?'}</span>
+      </span>
+      <span class="sym-txt">${prefix ? `<span class="sym-prefix">${prefix}x</span>` : ''}<span class="sym-core">${core}</span><span class="sym-quote">${quote}</span></span>
+    </div>`;
+}
+
+function renderSymDropdown(filterText) {
+  const q = (filterText || '').trim().toUpperCase();
+  let items, label;
+  if (!q) {
+    items = CURATED_SYMBOLS; label = 'Populares';
+  } else if (ALL_SYMBOLS.length) {
+    // busca en TODO el listado real de Binance, por símbolo o por el
+    // activo sin prefijo (así "BONK" también encuentra "1000BONKUSDT")
+    items = ALL_SYMBOLS
+      .filter(s => s.symbol.includes(q) || s.baseAsset.replace(/^\d+/, '').includes(q))
+      .map(s => s.symbol)
+      .slice(0, 40);
+    label = 'Resultados';
+  } else {
+    items = CURATED_SYMBOLS.filter(s => s.includes(q));
+    label = 'Resultados';
+  }
+  symHlIdx = -1;
+  symDropdown.innerHTML = items.length
+    ? `<div class="sym-dd-label">${label}</div>${items.map(symOptionHTML).join('')}`
+    : `<div class="sym-opt empty">🔍 Sin coincidencias</div>`;
+}
+function openSymDropdown(filterText) {
+  renderSymDropdown(filterText);
+  symDropdown.classList.add('open');
+}
+function closeSymDropdown() {
+  symDropdown.classList.remove('open');
+  symHlIdx = -1;
+}
+function highlightSymOpt(opts) {
+  opts.forEach((o, i) => o.classList.toggle('hl', i === symHlIdx));
+  if (opts[symHlIdx]) opts[symHlIdx].scrollIntoView({ block: 'nearest' });
+}
+function pickSym(sym) {
+  symInput.value = sym;
+  applySymbol();
+  closeSymDropdown();
+}
+
+// mousedown (no click) + preventDefault: evita que el input pierda foco
+// (blur) antes de registrar la selección.
+symDropdown.addEventListener('mousedown', e => {
+  const opt = e.target.closest('.sym-opt[data-sym]');
+  if (!opt) return;
+  e.preventDefault();
+  pickSym(opt.dataset.sym);
+});
+
+symInput.addEventListener('focus', () => {
+  symPrevValue = symInput.value;
+  openSymDropdown('');
+});
+// Selecciona todo el texto con UN solo clic (no hace falta doble clic).
+// preventDefault en mouseup evita que el navegador coloque el cursor en
+// el punto exacto del clic, que es lo que pisaría la selección.
+symInput.addEventListener('mouseup', e => {
+  e.preventDefault();
+  symInput.select();
+});
+symInput.addEventListener('input', () => openSymDropdown(symInput.value));
+symArrowBtn.addEventListener('click', () => {
+  symInput.focus();
+  openSymDropdown(symDropdown.classList.contains('open') ? symInput.value : '');
+});
+symInput.addEventListener('blur', () => {
+  closeSymDropdown();
+  if (!symInput.value.trim()) symInput.value = symPrevValue;
+});
+symInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const opts = [...symDropdown.querySelectorAll('.sym-opt[data-sym]')];
+    if (symHlIdx >= 0 && opts[symHlIdx]) { pickSym(opts[symHlIdx].dataset.sym); return; }
+    applySymbol();
+    closeSymDropdown();
+    return;
+  }
+  if (e.key === 'Escape') { closeSymDropdown(); symInput.blur(); return; }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    const opts = [...symDropdown.querySelectorAll('.sym-opt[data-sym]')];
+    if (!opts.length) return;
+    e.preventDefault();
+    symHlIdx = e.key === 'ArrowDown'
+      ? Math.min(symHlIdx + 1, opts.length - 1)
+      : Math.max(symHlIdx - 1, 0);
+    highlightSymOpt(opts);
+  }
+});
 
 document.getElementById('days-select').addEventListener('change', e => {
   daysCount = parseInt(e.target.value, 10);
   fetchCandles();
+  saveState();
 });
 
 /* ── Botones de temporalidad (píldoras) ── */
@@ -961,6 +1496,7 @@ document.querySelectorAll('.tf-pill').forEach(btn => {
     }
     updateFooter();
     fetchCandles();
+    saveState();
   });
 });
 
@@ -977,9 +1513,27 @@ function updateFooter() {
   }
 }
 
+// El click derecho es para sostener y usar la regla — no tiene que abrir el
+// menú contextual del navegador.
+cv.addEventListener('contextmenu', e => e.preventDefault());
+
 cv.addEventListener('mousedown', e => {
   const rect = cv.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const W2 = cv.width / devicePixelRatio;
+
+  // ── Click derecho sostenido = regla temporal ──
+  // Si la regla no estaba ya activada (con el botón 📏 o la tecla R), el
+  // click derecho la prende solo por el tiempo que se mantenga apretado.
+  // Si ya estaba activada de forma persistente, el click derecho no la
+  // apaga al soltar — se respeta el modo que el usuario dejó puesto.
+  if (e.button === 2) {
+    if (!rulerMode) {
+      rulerMode = true; rulerTempActive = true;
+      rulerBtn.classList.add('active');
+    }
+    e.preventDefault();
+  }
 
   // ── Redimensionar panel de indicadores ──
   if (cv._panelHandleY !== undefined) {
@@ -993,6 +1547,27 @@ cv.addEventListener('mousedown', e => {
     }
   }
 
+  // ── Arrastrar en el eje de precio (derecha) → escala vertical manual, estilo TradingView ──
+  if (!rulerMode && mx > W2 - lastPADR && my >= lastPADT && my <= lastPADT + lastChartH) {
+    isPriceDragging  = true;
+    priceDragStartY  = e.clientY;
+    priceDragBaseMin = manualScale ? manualPriceMin : lastPriceMin;
+    priceDragBaseMax = manualScale ? manualPriceMax : lastPriceMax;
+    cv.style.cursor = 'ns-resize';
+    return;
+  }
+
+  // ── Arrastrar en el eje de tiempo (abajo) → zoom horizontal, estilo TradingView ──
+  if (!rulerMode && my >= lastTimeBarY && my <= lastTimeBarY + lastPADB && mx >= lastPADL && mx <= lastW - lastPADR) {
+    isTimeDragging    = true;
+    timeDragStartX    = e.clientX;
+    timeDragStartMx   = mx;
+    timeDragBaseZoom  = zoomLevel;
+    timeDragBaseCamX  = camX;
+    cv.style.cursor = 'ew-resize';
+    return;
+  }
+
   if (rulerMode) {
     rulerActive = true; rulerLocked = false;
     rulerStartX = mx; rulerStartY = my; rulerEndX = mx; rulerEndY = my;
@@ -1003,12 +1578,16 @@ cv.addEventListener('mousedown', e => {
     return;
   }
   isDragging = true; dragStartX = e.clientX; dragStartCamX = camX;
+  dragStartY = e.clientY;
+  dragStartPriceMin = manualScale ? manualPriceMin : lastPriceMin;
+  dragStartPriceMax = manualScale ? manualPriceMax : lastPriceMax;
   cv.style.cursor = 'grabbing';
 });
 
 window.addEventListener('mousemove', e => {
   const rect = cv.getBoundingClientRect();
   mouseX = e.clientX - rect.left; mouseY = e.clientY - rect.top;
+  const W2 = cv.width / devicePixelRatio;
 
   // ── Arrastrar para redimensionar panel ──
   if (isPanelResizing) {
@@ -1016,17 +1595,44 @@ window.addEventListener('mousemove', e => {
     const dy = panelResizeStartY - e.clientY;  // arrastrar arriba = más grande
     const newRatio = panelResizeStartRatio + dy / H;
     panelHeightRatio = Math.max(PANEL_H_MIN / H, Math.min(PANEL_H_MAX / H, newRatio));
-    draw(); return;
+    scheduleDraw(); return;
   }
 
-  // Cursor ns-resize cerca del handle
-  if (cv._panelHandleY !== undefined) {
+  // ── Arrastrar en el eje de precio → reescalar verticalmente (manual) ──
+  if (isPriceDragging) {
+    const dy = e.clientY - priceDragStartY; // arriba (dy<0) = zoom in, abajo (dy>0) = zoom out
+    const factor = Math.exp(dy * 0.006);
+    const range  = (priceDragBaseMax - priceDragBaseMin) * factor;
+    const mid    = (priceDragBaseMin + priceDragBaseMax) / 2;
+    manualPriceMin = mid - range / 2;
+    manualPriceMax = mid + range / 2;
+    manualScale = true;
+    scheduleDraw(); return;
+  }
+
+  // ── Arrastrar en el eje de tiempo → zoom horizontal (derecha = zoom in, izquierda = zoom out) ──
+  if (isTimeDragging) {
+    const dx = e.clientX - timeDragStartX;
+    const factor = Math.exp(dx * 0.006);
+    const newZoom = Math.max(0.01, Math.min(500, timeDragBaseZoom * factor));
+    const W2     = cv.width / devicePixelRatio;
+    const oldBW  = Math.max(1, Math.min(200, ((W2 - 8 - 84) / Math.min(candles.length, 500)) * timeDragBaseZoom));
+    const oldSt  = oldBW + Math.max(1, oldBW * 0.15);
+    const newBW  = Math.max(1, Math.min(200, ((W2 - 8 - 84) / Math.min(candles.length, 500)) * newZoom));
+    const newSt  = newBW + Math.max(1, newBW * 0.15);
+    const idxUm  = (timeDragStartMx - 8 + timeDragBaseCamX) / oldSt;
+    zoomLevel = newZoom;
+    camX = Math.max(0, idxUm * newSt - (timeDragStartMx - 8));
+    scheduleDraw(); return;
+  }
+
+  // Cursor ns-resize cerca del handle de panel, o sobre el eje de precio; ew-resize sobre el eje de tiempo
+  if (!isDragging && !rulerMode) {
     const hY = cv._panelHandleY;
-    if (mouseY >= hY - 4 && mouseY <= hY + 8 && !isDragging && !rulerMode) {
-      cv.style.cursor = 'ns-resize';
-    } else if (!isDragging && !rulerMode) {
-      cv.style.cursor = 'crosshair';
-    }
+    const overPanelHandle = hY !== undefined && mouseY >= hY - 4 && mouseY <= hY + 8;
+    const overPriceAxis   = mouseX > W2 - lastPADR && mouseY >= lastPADT && mouseY <= lastPADT + lastChartH;
+    const overTimeAxis    = mouseY >= lastTimeBarY && mouseY <= lastTimeBarY + lastPADB && mouseX >= lastPADL && mouseX <= lastW - lastPADR;
+    cv.style.cursor = overPanelHandle ? 'ns-resize' : overPriceAxis ? 'ns-resize' : overTimeAxis ? 'ew-resize' : 'crosshair';
   }
 
   if (rulerMode && rulerActive) {
@@ -1034,23 +1640,65 @@ window.addEventListener('mousemove', e => {
     const bW2 = Math.max(1, Math.min(200, ((cv.width/devicePixelRatio - 8 - 84) / Math.min(candles.length, 500)) * zoomLevel));
     const s2  = bW2 + Math.max(1, bW2 * 0.15);
     rulerEndIdx = Math.round((mouseX - 8 + camX) / s2);
-    draw(); return;
+    scheduleDraw(); return;
   }
-  if (isDragging) camX = Math.max(0, dragStartCamX + (dragStartX - e.clientX));
-  draw();
+  if (isDragging) {
+    camX = Math.max(0, dragStartCamX + (dragStartX - e.clientX));
+    if (lastChartH > 0) {
+      const dy = e.clientY - dragStartY;
+      const range = dragStartPriceMax - dragStartPriceMin;
+      const priceDelta = dy * range / lastChartH;
+      manualPriceMin = dragStartPriceMin + priceDelta;
+      manualPriceMax = dragStartPriceMax + priceDelta;
+      manualScale = true;
+    }
+  }
+  scheduleDraw();
 });
 
 window.addEventListener('mouseup', () => {
   if (isPanelResizing) { isPanelResizing = false; cv.style.cursor = 'crosshair'; draw(); return; }
-  if (rulerMode && rulerActive) { rulerActive = false; rulerLocked = true; draw(); return; }
+  if (isPriceDragging)  { isPriceDragging  = false; cv.style.cursor = 'crosshair'; draw(); return; }
+  if (isTimeDragging)   { isTimeDragging   = false; cv.style.cursor = 'crosshair'; draw(); return; }
+  if (rulerMode && rulerActive) {
+    rulerActive = false;
+    if (rulerTempActive) {
+      // Se soltó el click derecho: la regla se apaga sola, no queda
+      // trabada como cuando se activa con el botón 📏 o la tecla R.
+      rulerMode = false; rulerLocked = false; rulerTempActive = false;
+      rulerStartX = -1; rulerEndX = -1;
+      rulerBtn.classList.remove('active');
+    } else {
+      rulerLocked = true;
+    }
+    draw(); return;
+  }
   isDragging = false; cv.style.cursor = 'crosshair';
+});
+
+cv.addEventListener('dblclick', e => {
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const W2 = cv.width / devicePixelRatio;
+  // Doble clic sobre el eje de tiempo (abajo) → además resetea el zoom horizontal
+  if (my >= lastTimeBarY && my <= lastTimeBarY + lastPADB && mx >= lastPADL && mx <= lastW - lastPADR) {
+    zoomLevel = 1.0;
+  }
+  // Doble clic en cualquier parte del gráfico → vuelve al auto-ajuste vertical
+  manualScale = false;
+  scheduleDraw();
 });
 
 cv.addEventListener('mouseleave', () => { mouseX = -1; mouseY = -1; draw(); });
 
 cv.addEventListener('wheel', e => {
   e.preventDefault();
-  if (e.ctrlKey || e.metaKey || Math.abs(e.deltaX) < Math.abs(e.deltaY)) {
+  // Zoom con ctrl/cmd, o con scroll vertical normal (mouse wheel).
+  // Solo se considera "pan horizontal" si el deltaX es claramente mayor
+  // (ej: swipe de dos dedos en trackpad), para que el ruido horizontal
+  // de un mouse normal no tumbe el zoom por accidente.
+  const esPanHorizontal = !e.ctrlKey && !e.metaKey && Math.abs(e.deltaX) > Math.abs(e.deltaY) * 2;
+  if (!esPanHorizontal && e.deltaY !== 0) {
     const zoomFactor = e.deltaY < 0 ? 1.5 : 1 / 1.5;
     const oldZoom = zoomLevel;
     zoomLevel = Math.max(0.01, Math.min(500, zoomLevel * zoomFactor));
@@ -1065,27 +1713,44 @@ cv.addEventListener('wheel', e => {
   } else {
     camX = Math.max(0, camX + e.deltaX * 2);
   }
-  draw();
+  scheduleDraw();
 }, { passive: false });
 
-cv.addEventListener('touchstart', e => { isDragging = true; dragStartX = e.touches[0].clientX; dragStartCamX = camX; }, { passive: true });
-cv.addEventListener('touchmove',  e => { if (!isDragging) return; camX = Math.max(0, dragStartCamX + (dragStartX - e.touches[0].clientX)); draw(); }, { passive: true });
+cv.addEventListener('touchstart', e => {
+  isDragging = true; dragStartX = e.touches[0].clientX; dragStartCamX = camX;
+  dragStartY = e.touches[0].clientY;
+  dragStartPriceMin = manualScale ? manualPriceMin : lastPriceMin;
+  dragStartPriceMax = manualScale ? manualPriceMax : lastPriceMax;
+}, { passive: true });
+cv.addEventListener('touchmove',  e => {
+  if (!isDragging) return;
+  camX = Math.max(0, dragStartCamX + (dragStartX - e.touches[0].clientX));
+  if (lastChartH > 0) {
+    const dy = e.touches[0].clientY - dragStartY;
+    const range = dragStartPriceMax - dragStartPriceMin;
+    const priceDelta = dy * range / lastChartH;
+    manualPriceMin = dragStartPriceMin + priceDelta;
+    manualPriceMax = dragStartPriceMax + priceDelta;
+    manualScale = true;
+  }
+  scheduleDraw();
+}, { passive: true });
 cv.addEventListener('touchend',   () => isDragging = false);
 cv.style.cursor = 'crosshair';
 
 rulerBtn.addEventListener('click', () => {
   rulerMode = !rulerMode; rulerBtn.classList.toggle('active', rulerMode);
-  if (!rulerMode) { rulerActive = false; rulerLocked = false; rulerStartX = -1; rulerEndX = -1; draw(); }
+  if (!rulerMode) { rulerActive = false; rulerLocked = false; rulerTempActive = false; rulerStartX = -1; rulerEndX = -1; draw(); }
 });
 
 window.addEventListener('keydown', e => {
   if (document.activeElement === symInput) return;
   if (e.key === 'r' || e.key === 'R') {
     rulerMode = !rulerMode; rulerBtn.classList.toggle('active', rulerMode);
-    if (!rulerMode) { rulerActive = false; rulerLocked = false; rulerStartX = -1; rulerEndX = -1; draw(); }
+    if (!rulerMode) { rulerActive = false; rulerLocked = false; rulerTempActive = false; rulerStartX = -1; rulerEndX = -1; draw(); }
   }
   if (e.key === 'Escape' && rulerMode) {
-    rulerMode = false; rulerActive = false; rulerLocked = false; rulerStartX = -1; rulerEndX = -1;
+    rulerMode = false; rulerActive = false; rulerLocked = false; rulerTempActive = false; rulerStartX = -1; rulerEndX = -1;
     rulerBtn.classList.remove('active'); draw();
   }
 });
@@ -1093,6 +1758,7 @@ window.addEventListener('keydown', e => {
 setInterval(fetchOI, 30000);
 setInterval(fetchFR, 60000);
 
+applySavedState();
 const ro = new ResizeObserver(resize);
 ro.observe(wrap);
 resize();
@@ -1136,7 +1802,7 @@ function buildEditRows() {
     if (s.key === 'nomarket') {
       card.innerHTML = `
         <div class="sess-card-header" style="background:#1a1d20">
-          <div class="sess-card-dot" style="background:#3a3f47;border:1px solid #5a6272"></div>
+          <input type="color" class="sess-card-color" data-i="${i}" data-f="color" value="${s.color}" title="Color de esta sesión" />
           <div class="sess-card-name" style="color:#848e9c">${s.name}</div>
           <div class="sess-card-utc6" id="hdr-${i}">
             <strong style="color:#848e9c">${openLocal} – ${closeLocal}</strong>
@@ -1158,7 +1824,7 @@ function buildEditRows() {
     }
     card.innerHTML = `
       <div class="sess-card-header">
-        <div class="sess-card-dot" style="background:${s.color}"></div>
+        <input type="color" class="sess-card-color" data-i="${i}" data-f="color" value="${s.color}" title="Color de esta sesión" />
         <div class="sess-card-name">${s.name}</div>
         <div class="sess-card-utc6" id="hdr-${i}">
           <strong>${openLocal} – ${closeLocal}</strong>
@@ -1179,13 +1845,15 @@ function buildEditRows() {
     container.appendChild(card);
   });
 
-  container.querySelectorAll('select[data-f], input[type=checkbox][data-f]').forEach(inp => {
+  container.querySelectorAll('select[data-f], input[type=checkbox][data-f], input[type=color][data-f]').forEach(inp => {
     inp.addEventListener('change', () => {
       const i = +inp.dataset.i, f = inp.dataset.f;
       if (inp.type === 'checkbox') {
         sessConfig[i][f] = inp.checked;
         const card = document.getElementById(`sess-card-${i}`);
         if (card) card.style.opacity = inp.checked ? '1' : '0.45';
+      } else if (inp.type === 'color') {
+        sessConfig[i][f] = inp.value;
       } else {
         const lh = parseInt(inp.value, 10) || 0;
         let utcH = lh + 6; if (utcH >= 24) utcH -= 24;
@@ -1227,7 +1895,79 @@ function updateLegend() {
     if (el && s) el.textContent = `${s.name} (${localTimeStr(s.startUtcH)}–${localTimeStr(s.endUtcH)})`;
     const dot = document.getElementById(`dot-${key}`);
     if (dot && s) dot.style.background = s.color;
+    // Ocultar del todo las sesiones que estén desactivadas en la
+    // configuración actual — la leyenda solo debe reflejar lo que
+    // realmente está activo en el gráfico.
+    const item = dot ? dot.closest('.sess-leg-item') : null;
+    if (item) item.style.display = (s && s.enabled) ? '' : 'none';
   });
+}
+
+/* ═══════════════════════════════════════
+   PRESETS — UI (barra dentro del modal)
+═══════════════════════════════════════ */
+function renderPresetBar() {
+  const list = document.getElementById('sess-presets-list');
+  if (!list) return;
+  list.innerHTML = '';
+  sessPresets.forEach(p => {
+    const chip = document.createElement('div');
+    chip.className = 'preset-chip' + (p.id === activePresetId ? ' active' : '');
+    chip.dataset.id = p.id;
+    const isDefault = p.id === defaultPresetId;
+    chip.innerHTML = `
+      <button type="button" class="preset-star${isDefault ? ' is-default' : ''}" title="${isDefault ? 'Es la configuración predeterminada' : 'Marcar como predeterminada'}">★</button>
+      <span class="preset-name" title="Usar esta configuración">${p.name}</span>
+      <button type="button" class="preset-del" title="Eliminar configuración">✕</button>
+    `;
+    chip.querySelector('.preset-name').addEventListener('click', () => selectPreset(p.id));
+    chip.querySelector('.preset-star').addEventListener('click', e => { e.stopPropagation(); setDefaultPreset(p.id); });
+    chip.querySelector('.preset-del').addEventListener('click',  e => { e.stopPropagation(); deletePreset(p.id); });
+    list.appendChild(chip);
+  });
+}
+
+function selectPreset(id) {
+  const p = getPresetById(id);
+  sessConfig    = clonePresetSessions(p.sessions);
+  activePresetId = id;
+  buildEditRows();
+  applySessionConfig();
+  renderPresetBar();
+  savePresetsData();
+}
+
+function setDefaultPreset(id) {
+  defaultPresetId = id;
+  savePresetsData();
+  renderPresetBar();
+}
+
+function deletePreset(id) {
+  if (sessPresets.length <= 1) { alert('Debe quedar al menos una configuración guardada.'); return; }
+  const p = getPresetById(id);
+  if (!confirm(`¿Eliminar la configuración "${p.name}"? Esta acción no se puede deshacer.`)) return;
+  sessPresets = sessPresets.filter(x => x.id !== id);
+  if (defaultPresetId === id) defaultPresetId = sessPresets[0].id;
+  if (activePresetId === id) {
+    activePresetId = defaultPresetId;
+    sessConfig = clonePresetSessions(getPresetById(activePresetId).sessions);
+    buildEditRows();
+    applySessionConfig();
+  }
+  savePresetsData();
+  renderPresetBar();
+}
+
+function addPresetFromCurrent() {
+  const name = prompt('Nombre de la nueva configuración:', `Configuración ${sessPresets.length + 1}`);
+  if (name === null) return;
+  const finalName = name.trim() || `Configuración ${sessPresets.length + 1}`;
+  const id = 'preset-' + Date.now();
+  sessPresets.push({ id, name: finalName, sessions: clonePresetSessions(sessConfig) });
+  activePresetId = id;
+  savePresetsData();
+  renderPresetBar();
 }
 
 // Modal
@@ -1236,15 +1976,41 @@ const editBtn  = document.getElementById('sess-edit-btn');
 const applyBtn = document.getElementById('sess-apply-btn');
 const resetBtn = document.getElementById('sess-reset-btn');
 const closeBtn = document.getElementById('sess-modal-close');
+const presetAddBtn = document.getElementById('sess-preset-add-btn');
 
-editBtn.addEventListener('click',   () => { buildEditRows(); overlay.classList.add('open'); });
+editBtn.addEventListener('click',   () => { buildEditRows(); renderPresetBar(); syncCandleColorInputs(); overlay.classList.add('open'); });
 overlay.addEventListener('click',   e  => { if (e.target === overlay) overlay.classList.remove('open'); });
 closeBtn.addEventListener('click',  () => overlay.classList.remove('open'));
 applyBtn.addEventListener('click',  () => { applySessionConfig(); overlay.classList.remove('open'); });
 resetBtn.addEventListener('click',  () => {
-  sessConfig = SESS_DEFAULTS.map(s => ({ ...s }));
-  buildEditRows(); applySessionConfig();
+  sessConfig = clonePresetSessions(getPresetById(defaultPresetId).sessions);
+  activePresetId = defaultPresetId;
+  buildEditRows(); applySessionConfig(); renderPresetBar(); savePresetsData();
 });
+if (presetAddBtn) presetAddBtn.addEventListener('click', addPresetFromCurrent);
+
+// Colores de velas
+const candleUpInput   = document.getElementById('candle-color-up');
+const candleDownInput = document.getElementById('candle-color-down');
+const candleResetBtn  = document.getElementById('candle-color-reset-btn');
+
+function syncCandleColorInputs() {
+  if (candleUpInput)   candleUpInput.value   = CANDLE_COLORS.up;
+  if (candleDownInput) candleDownInput.value = CANDLE_COLORS.down;
+}
+if (candleUpInput) candleUpInput.addEventListener('input', () => {
+  CANDLE_COLORS.up = candleUpInput.value;
+  applyCandleColorVars(); scheduleDraw(); saveState();
+});
+if (candleDownInput) candleDownInput.addEventListener('input', () => {
+  CANDLE_COLORS.down = candleDownInput.value;
+  applyCandleColorVars(); scheduleDraw(); saveState();
+});
+if (candleResetBtn) candleResetBtn.addEventListener('click', () => {
+  CANDLE_COLORS = { ...CANDLE_COLORS_DEFAULT };
+  syncCandleColorInputs(); applyCandleColorVars(); scheduleDraw(); saveState();
+});
+syncCandleColorInputs();
 
 /* ═══════════════════════════════════════
    BARRA DE SESIONES ESTILO WTB — CANVAS
@@ -1316,15 +2082,19 @@ function drawSessionBar() {
   VM_SESSIONS.forEach((s, i) => {
     const y = ROWS_TOP + i * (ROW_H + ROW_GAP);
 
-    const durH      = s.endUtcH - s.startUtcH;
+    let durH        = s.endUtcH - s.startUtcH;
+    if (durH <= 0) durH += 24; // la sesión cruza medianoche (ej. Tokio 23→9 UTC)
     const startFrac = utcHToLocalFrac(s.startUtcH);
     const endFrac   = startFrac + Math.min(durH, 24) / 24;
 
     const _sStart = s.startUtcH % 24;
-    const _sEnd   = s.endUtcH;
+    const _sEndRaw = s.endUtcH % 24;
+    // Cruza medianoche si el cierre (en reloj UTC) queda antes o igual que la apertura
+    const _wraps = (s.endUtcH > 24) || (_sEndRaw <= _sStart);
+    const _sEnd  = _sEndRaw;
     let isActive = false;
-    if (_sEnd > 24) {
-      isActive = _nowUtcH >= _sStart || _nowUtcH < (_sEnd % 24);
+    if (_wraps) {
+      isActive = _nowUtcH >= _sStart || _nowUtcH < _sEnd;
     } else {
       isActive = _nowUtcH >= _sStart && _nowUtcH < _sEnd;
     }
@@ -1398,9 +2168,20 @@ function drawSessionBar() {
 
 function applySessionConfig() {
   VM_SESSIONS = sessConfig.filter(s => s.enabled).map(s => ({ ...s }));
+
+  // Sincroniza los cambios hacia el preset activo (ej. "Predeterminada 1")
+  // para que queden guardados de forma permanente y no se pierdan si se
+  // limpia el estado general de la app (botón Restablecer).
+  const activePreset = getPresetById(activePresetId);
+  if (activePreset) {
+    activePreset.sessions = clonePresetSessions(sessConfig);
+    savePresetsData();
+  }
+
   if (rawCandles.length) { snapToEnd = true; buildSessionCandles(); draw(); }
   updateLegend();
   drawSessionBar();
+  saveState();
 }
 
 const sessRO = new ResizeObserver(drawSessionBar);
@@ -1434,12 +2215,25 @@ let _sessAnimLast = 0;
   if (topbar) {
     const sep    = document.createElement('span');
     sep.className = 'sep'; sep.textContent = '|';
+    // El margin-left:auto vive acá (y no en .topbar-right-group) para que
+    // Indicadores + Restablecer + Configuración queden pegados entre sí
+    // como un solo bloque, todo empujado al lado derecho del topbar.
+    sep.style.marginLeft = 'auto';
     const btn    = document.createElement('button');
     btn.className = 'tf-btn'; btn.id = 'ind-btn';
     btn.title = 'Indicadores (I)';
     btn.innerHTML = '📈 Indicadores';
-    topbar.appendChild(sep);
-    topbar.appendChild(btn);
+    // Se inserta ANTES del grupo derecho (Restablecer/Configuración) para
+    // que el orden final quede: Indicadores → Restablecer → Configuración
+    // → En vivo. Si por algún motivo ese grupo no existe, cae al final.
+    const rightGroup = document.querySelector('.topbar-right-group');
+    if (rightGroup) {
+      topbar.insertBefore(sep, rightGroup);
+      topbar.insertBefore(btn, rightGroup);
+    } else {
+      topbar.appendChild(sep);
+      topbar.appendChild(btn);
+    }
     btn.addEventListener('click', openIndicatorModal);
   }
 
@@ -1607,6 +2401,7 @@ let _sessAnimLast = 0;
           renderChipsBar();
           draw();
           if (_selectedId === def.id) renderConfig(def.id);
+          saveState();
         });
         list.appendChild(row);
       });
@@ -1722,6 +2517,7 @@ let _sessAnimLast = 0;
       renderBadge();
       renderChipsBar();
       draw();
+      saveState();
     });
 
     function collectParams() {
@@ -1740,6 +2536,7 @@ let _sessAnimLast = 0;
       if (!window.INDICATORS.isActive(id)) return;
       window.INDICATORS.setParams(id, collectParams());
       draw();
+      saveState();
     }
   }
 
@@ -1774,6 +2571,7 @@ let _sessAnimLast = 0;
         renderList(document.getElementById('ind-search')?.value || '');
         if (_selectedId === def.id) renderConfig(def.id);
         draw();
+        saveState();
       });
       // Clic en el chip → abrir modal en ese indicador
       chip.addEventListener('click', () => {

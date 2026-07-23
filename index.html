@@ -12,18 +12,11 @@
   <div class="topbar">
     <span class="logo">BINANCE FUTURES</span>
     <span class="sep">|</span>
-    <input id="sym-input" list="sym-list" placeholder="Ej: BTCUSDT" value="BTCUSDT" autocomplete="off" spellcheck="false" />
-    <datalist id="sym-list">
-      <option value="BTCUSDT"><option value="ETHUSDT"><option value="BNBUSDT">
-      <option value="SOLUSDT"><option value="XRPUSDT"><option value="ADAUSDT">
-      <option value="DOGEUSDT"><option value="AVAXUSDT"><option value="LTCUSDT">
-      <option value="LINKUSDT"><option value="MATICUSDT"><option value="DOTUSDT">
-      <option value="UNIUSDT"><option value="NEARUSDT"><option value="ATOMUSDT">
-      <option value="WLDUSDT"><option value="APTUSDT"><option value="ARBUSDT">
-      <option value="OPUSDT"><option value="INJUSDT"><option value="SUIUSDT">
-      <option value="PEPEUSDT"><option value="WIFUSDT"><option value="JUPUSDT">
-      <option value="ONDOUSDT">
-    </datalist>
+    <div class="sym-wrap">
+      <input id="sym-input" placeholder="Ej: BTCUSDT" value="BTCUSDT" autocomplete="off" spellcheck="false" />
+      <button type="button" id="sym-arrow" title="Ver monedas">▾</button>
+      <div id="sym-dropdown"></div>
+    </div>
     <button class="tf-btn" id="ruler-btn" title="Regla (R)">📏 Regla</button>
     <span class="sep">|</span>
     <div id="tf-bar" style="display:flex;align-items:center;gap:3px;flex-wrap:wrap;">
@@ -59,6 +52,11 @@
         <option value="180">180</option><option value="365">365</option>
       </select>
     </div>
+    <div class="topbar-right-group">
+      <button class="tf-btn" id="reset-btn" title="Restablecer zoom/escala del gráfico y toda la configuración guardada">🔄 Restablecer</button>
+      <button class="tf-btn" id="sess-edit-btn" title="Configuración — sesiones y colores">⚙️ Configuración</button>
+    </div>
+    <span class="sep">|</span>
     <div id="ws-status">
       <div id="ws-dot"></div>
       <span id="ws-label"></span>
@@ -90,7 +88,6 @@
       <div class="sess-leg-item"><div class="sess-leg-dot" id="dot-newyork" style="background:#10b981"></div> <span id="leg-newyork-txt">New York</span></div>
       <div class="sess-leg-item"><div class="sess-leg-dot" id="dot-nomarket" style="background:#3a3f47;border:1px solid #5a6272"></div> <span id="leg-nomarket-txt" style="color:#848e9c">Sin mercado</span></div>
       <div class="sess-leg-item"><div class="sess-leg-dot" style="background:#fff;border:1px solid #555;opacity:.7"></div> <span style="color:#848e9c">Brillante = activo ahora</span></div>
-      <button id="sess-edit-btn">✏️ Editar horarios</button>
     </div>
     <div id="sess-canvas-wrap">
       <canvas id="sess-cv"></canvas>
@@ -100,38 +97,42 @@
   <div id="err"></div>
 
   <div id="chart-wrap">
-    <div class="loading" id="loading">Cargando datos...</div>
+    <div class="loading" id="loading"><div class="spinner"></div><span id="loading-text">Cargando datos...</span></div>
     <canvas id="cv"></canvas>
+    <button type="button" id="jump-latest-btn" title="Ir a la vela más reciente">»</button>
   </div>
 
   <div class="footer" id="footer-txt">🕐 Hora local UTC-6 (Tegucigalda) · Velas por sesión de mercado · Base: 15m</div>
-
-  <!-- DEBUG PANEL -->
-  <div id="dbg" style="
-    position:fixed; bottom:10px; right:10px; z-index:9999;
-    background:#0b0e11ee; border:1px solid #f0b90b66; border-radius:8px;
-    padding:10px 14px; font-family:monospace; font-size:10px; color:#848e9c;
-    min-width:260px; max-width:340px; max-height:260px; overflow-y:auto;
-    box-shadow:0 4px 24px rgba(0,0,0,0.7);
-  ">
-    <div style="color:#f0b90b;font-weight:700;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">
-      🛠 DEBUG WS
-      <button onclick="document.getElementById('dbg').style.display='none'"
-        style="background:none;border:none;color:#848e9c;cursor:pointer;font-size:13px;">✕</button>
-    </div>
-    <div id="dbg-log" style="display:flex;flex-direction:column;gap:2px;"></div>
-  </div>
 </div>
 
 <!-- Modal edición de sesiones -->
 <div id="sess-modal-overlay">
   <div id="sess-modal">
     <div id="sess-modal-header">
-      <div><h2>✏️ Editar Horarios de Sesiones de Mercado</h2></div>
+      <div><h2>⚙️ Configuración — Sesiones y Colores</h2></div>
       <button id="sess-modal-close">✕</button>
     </div>
     <div class="tz-badge">
       🌎 Tegucigalpa, Honduras · UTC−6 · <span>Todos los horarios están en tu hora local</span>
+    </div>
+
+    <div id="candle-colors-bar">
+      <span class="presets-label">🕯️ Color de velas:</span>
+      <div class="candle-color-item">
+        <input type="color" id="candle-color-up" value="#26d994" />
+        <label for="candle-color-up">Alcista</label>
+      </div>
+      <div class="candle-color-item">
+        <input type="color" id="candle-color-down" value="#ff5470" />
+        <label for="candle-color-down">Bajista</label>
+      </div>
+      <button type="button" id="candle-color-reset-btn">↺ Restaurar colores de velas</button>
+    </div>
+
+    <div id="sess-presets-bar">
+      <span class="presets-label">📋 Configuraciones:</span>
+      <div id="sess-presets-list"></div>
+      <button type="button" id="sess-preset-add-btn">＋ Nueva configuración</button>
     </div>
     <div id="sess-edit-rows"></div>
     <div class="sess-modal-footer">
@@ -146,6 +147,9 @@
 
 <!-- ✅ Motor de indicadores — carga antes que app.js -->
 <script src="indicators.js"></script>
+<script src="ind_session_liq.js"></script>
+<script src="ind_rsi.js"></script>
+<script src="ind_solapamiento.js"></script>
 <!-- ✅ App principal -->
 <script src="app.js"></script>
 </body>

@@ -177,7 +177,7 @@
         ctx.font = 'bold 9px sans-serif';
         ctx.textAlign = 'center';
         ctx.fillStyle = color;
-        ctx.fillText(g.gapPct.toFixed(2) + '%', (x1 + x2) / 2, yTop - 4);
+        ctx.fillText('Hueco: ' + g.gapPct.toFixed(2) + '%', (x1 + x2) / 2, yTop - 4);
       }
 
       if (conBodyPct) {
@@ -207,19 +207,19 @@
     name: 'Solapamiento — Hueco Cierre/Apertura',
     shortName: 'Solapamiento',
     type: 'overlay',
-    defaultOn: false,
+    defaultOn: true,
     params: [
       { key: 'minGapPct',   label: 'Hueco mínimo (%)',       type: 'number', default: 0,  min: 0, max: 5, step: 0.01 },
-      { key: 'colorArriba', label: 'Color hueco hacia arriba', type: 'color', default: '#9c6cff' },
-      { key: 'colorAbajo',  label: 'Color hueco hacia abajo',  type: 'color', default: '#ffa94d' },
-      { key: 'opacidad',    label: 'Opacidad relleno (%)',    type: 'number', default: 22, min: 0, max: 100, step: 1 },
+      { key: 'colorArriba', label: 'Color hueco hacia arriba', type: 'color', default: '#00ff00' },
+      { key: 'colorAbajo',  label: 'Color hueco hacia abajo',  type: 'color', default: '#ff0000' },
+      { key: 'opacidad',    label: 'Opacidad relleno (%)',    type: 'number', default: 55, min: 0, max: 100, step: 1 },
       { key: 'mostrarBorde', label: 'Borde de la caja', type: 'select', default: 'on',
         options: [{ v: 'on', l: 'Mostrar' }, { v: 'off', l: 'Ocultar' }] },
-      { key: 'mostrarPct',  label: 'Mostrar % del hueco', type: 'select', default: 'off',
+      { key: 'mostrarPct',  label: 'Mostrar % del hueco', type: 'select', default: 'on',
         options: [{ v: 'off', l: 'Ocultar' }, { v: 'on', l: 'Mostrar' }] },
-      { key: 'mostrarBodyPct', label: '% cuerpo de la vela', type: 'select', default: 'off',
+      { key: 'mostrarBodyPct', label: '% cuerpo de la vela', type: 'select', default: 'on',
         options: [{ v: 'off', l: 'Ocultar' }, { v: 'on', l: 'Mostrar' }] },
-      { key: 'mostrarExtPct', label: '% Open→Low/High', type: 'select', default: 'off',
+      { key: 'mostrarExtPct', label: '% Open→Low/High', type: 'select', default: 'on',
         options: [{ v: 'off', l: 'Ocultar' }, { v: 'on', l: 'Mostrar' }] },
     ],
     calc: calcSolapamiento,

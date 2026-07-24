@@ -71,9 +71,9 @@ const SESS_DEFAULTS = [
    Tokio y New York activas con sus horas doradas propias. */
 const SESS_PRESET_1 = [
   { key:'sydney',   name:'Sydney',      color:'#38bdf8', colorBright:'#7dd3fc', startUtcH:23, endUtcH:7,  solapStart:23, solapEnd:0,  enabled:false },
-  { key:'tokyo',    name:'Tokio',       color:'#b13e3e', colorBright:'#cc8282', startUtcH:23, endUtcH:9,  solapStart:0,  solapEnd:7,  enabled:true  },
+  { key:'tokyo',    name:'Tokio',       color:'#b13e3e', colorBright:'#cc8282', startUtcH:23, endUtcH:8,  solapStart:0,  solapEnd:7,  enabled:true  },
   { key:'london',   name:'Londres',     color:'#c084fc', colorBright:'#e879f9', startUtcH:7,  endUtcH:16, solapStart:9,  solapEnd:12, enabled:false },
-  { key:'newyork',  name:'New York',    color:'#10b981', colorBright:'#34d399', startUtcH:9,  endUtcH:21, solapStart:12, solapEnd:16, enabled:true  },
+  { key:'newyork',  name:'New York',    color:'#10b981', colorBright:'#34d399', startUtcH:9,  endUtcH:22, solapStart:12, solapEnd:16, enabled:true  },
   { key:'nomarket', name:'Sin mercado', color:'#3a3f47', colorBright:'#5a6272', startUtcH:21, endUtcH:23, solapStart:21, solapEnd:23, enabled:false },
 ];
 
@@ -189,13 +189,6 @@ function scheduleDraw() {
 let rulerStartX = -1, rulerStartY = -1, rulerEndX = -1, rulerEndY = -1;
 let rulerStartIdx = -1, rulerEndIdx = -1;
 
-// ── Calculadora de la regla: capital (precio de entrada en USDT) y comisión ──
-// rulerCapital: monto en USDT que se usa como base para calcular el PnL en $.
-// rulerFeePct : comisión TOTAL de ida y vuelta (entrar + salir), en %.
-//   Binance Futures cobra ~0.10% al entrar y ~0.10% al salir → 0.20% total por defecto.
-let rulerCapital = 1000;
-let rulerFeePct  = 0.20;
-
 // Panel de indicadores — altura ajustable con drag
 let panelHeightRatio = 0.28;   // porcentaje de la altura total
 const PANEL_H_MIN    = 80;     // px mínimo por panel
@@ -225,7 +218,6 @@ function saveState() {
         panelHeightRatio,
         indicators: (window.INDICATORS ? window.INDICATORS.getActive() : [])
           .map(a => ({ id: a.def.id, params: a.params })),
-        rulerCapital, rulerFeePct,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch (e) { console.warn('[state] No se pudo guardar:', e); }
@@ -264,16 +256,10 @@ function applySavedState() {
   }
   applyCandleColorVars();
   if (Number.isFinite(st.panelHeightRatio)) panelHeightRatio = st.panelHeightRatio;
-  if (Number.isFinite(st.rulerCapital) && st.rulerCapital >= 0) rulerCapital = st.rulerCapital;
-  if (Number.isFinite(st.rulerFeePct)  && st.rulerFeePct  >= 0) rulerFeePct  = st.rulerFeePct;
 
   // Reflejar en la UI
   const symEl = document.getElementById('sym-input');
   if (symEl) symEl.value = symbol;
-  const rulerCapEl = document.getElementById('ruler-capital-input');
-  if (rulerCapEl) rulerCapEl.value = rulerCapital;
-  const rulerFeeEl = document.getElementById('ruler-fee-input');
-  if (rulerFeeEl) rulerFeeEl.value = rulerFeePct;
   const daysSel = document.getElementById('days-select');
   if (daysSel) {
     daysSel.value = String(daysCount);
@@ -333,12 +319,13 @@ const wsLbl   = document.getElementById('ws-label');
 const rulerBtn = document.getElementById('ruler-btn');
 const chartResetBtn = document.getElementById('reset-btn');
 chartResetBtn.addEventListener('click', () => {
-  const ok = confirm('Esto restablece el zoom, la escala del gráfico y toda la configuración guardada (símbolo, sesiones, colores, indicadores activos), volviendo a los valores originales del código. ¿Continuar?');
+  const ok = confirm('Esto restablece el zoom, la escala del gráfico y toda la configuración guardada (símbolo, sesiones, colores, indicadores activos, capital/comisión de Solapamientos), volviendo a los valores originales del código. ¿Continuar?');
   if (!ok) return;
   try {
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(PRESETS_KEY);
     localStorage.removeItem(PRESET1_SYNC_KEY);
+    localStorage.removeItem('vm_solape_calc_v1');
   } catch (e) { console.warn('[reset] No se pudo limpiar localStorage:', e); }
   location.reload();
 });
@@ -1244,36 +1231,19 @@ function draw() {
       ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.stroke();
     });
 
-    // ── PnL en USDT según el capital y la comisión configurados ──
-    // grossPnl: ganancia/pérdida bruta si se opera con "rulerCapital" USDT como margen/notional.
-    // feeUsdt : comisión de ida y vuelta (entrar + salir) sobre ese capital, a la tasa "rulerFeePct" (%).
-    // netPnl  : grossPnl - feeUsdt.
-    const grossPnl  = rulerCapital * (pPct / 100);
-    const feeUsdt   = rulerCapital * (rulerFeePct / 100);
-    const netPnl    = grossPnl - feeUsdt;
-    const netSign   = netPnl >= 0 ? '+' : '-';
-    const netCol    = netPnl >= 0 ? CANDLE_COLORS.up : CANDLE_COLORS.down;
-    const fmtUsd = v => Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
     const midX = (rx1 + rx2) / 2, midY = (ry1 + ry2) / 2;
     const lns = [
       { text: `${sign}${fmtPrice(Math.abs(pDiff))}`,                                   color: col,       bold: true,  size: 12 },
       { text: `${sign}${pPct.toFixed(2)}%`,                                             color: col,       bold: true,  size: 12 },
       { text: `${nBars} vela${nBars!==1?'s':''}  ·  ${timeDiffStr}`,                  color: '#848e9c', bold: false, size: 10 },
-      { text: `Capital: $${fmtUsd(rulerCapital)}`,                                     color: '#848e9c', bold: false, size: 10 },
-      { text: `PnL bruto: ${sign}$${fmtUsd(grossPnl)}`,                                color: col,       bold: false, size: 11 },
-      { text: `Comisión (${rulerFeePct.toFixed(2)}%): -$${fmtUsd(feeUsdt)}`,           color: '#ff5470', bold: false, size: 10 },
-      { text: `PnL neto: ${netSign}$${fmtUsd(netPnl)}`,                                color: netCol,    bold: true,  size: 12 },
     ];
     ctx.font = 'bold 12px monospace';
-    let panelW = 0;
-    lns.forEach(({ text, bold, size }) => {
-      ctx.font = `${bold?'bold ':''}${size}px monospace`;
-      panelW = Math.max(panelW, ctx.measureText(text).width);
-    });
-    panelW += 28;
-    let panelH = 12;
-    lns.forEach(({ size }) => { panelH += size + 5; });
+    const panelW = Math.max(
+      ctx.measureText(lns[0].text).width,
+      ctx.measureText(lns[1].text).width,
+      (() => { ctx.font = '10px monospace'; return ctx.measureText(lns[2].text).width; })()
+    ) + 28;
+    const panelH = 62;
     let px2 = Math.max(PADL + 4, Math.min(W - PADR - panelW - 4, midX - panelW/2));
     let py2 = Math.max(PADT + 4, Math.min(PADT + chartH - panelH - 4, midY - panelH/2));
     ctx.fillStyle = 'rgba(0,0,0,0.4)';
@@ -1773,26 +1743,6 @@ rulerBtn.addEventListener('click', () => {
   rulerMode = !rulerMode; rulerBtn.classList.toggle('active', rulerMode);
   if (!rulerMode) { rulerActive = false; rulerLocked = false; rulerTempActive = false; rulerStartX = -1; rulerEndX = -1; draw(); }
 });
-
-/* ── Calculadora de la regla: capital y comisión editables ── */
-const rulerCapitalInput = document.getElementById('ruler-capital-input');
-const rulerFeeInput     = document.getElementById('ruler-fee-input');
-if (rulerCapitalInput) {
-  rulerCapitalInput.addEventListener('input', () => {
-    const v = parseFloat(rulerCapitalInput.value);
-    rulerCapital = Number.isFinite(v) && v >= 0 ? v : 0;
-    saveState();
-    if (rulerMode) draw();
-  });
-}
-if (rulerFeeInput) {
-  rulerFeeInput.addEventListener('input', () => {
-    const v = parseFloat(rulerFeeInput.value);
-    rulerFeePct = Number.isFinite(v) && v >= 0 ? v : 0;
-    saveState();
-    if (rulerMode) draw();
-  });
-}
 
 window.addEventListener('keydown', e => {
   if (document.activeElement === symInput) return;

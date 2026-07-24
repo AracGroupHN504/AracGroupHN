@@ -189,6 +189,13 @@ function scheduleDraw() {
 let rulerStartX = -1, rulerStartY = -1, rulerEndX = -1, rulerEndY = -1;
 let rulerStartIdx = -1, rulerEndIdx = -1;
 
+// ── Calculadora de la regla: capital (precio de entrada en USDT) y comisión ──
+// rulerCapital: monto en USDT que se usa como base para calcular el PnL en $.
+// rulerFeePct : comisión TOTAL de ida y vuelta (entrar + salir), en %.
+//   Binance Futures cobra ~0.10% al entrar y ~0.10% al salir → 0.20% total por defecto.
+let rulerCapital = 1000;
+let rulerFeePct  = 0.20;
+
 // Panel de indicadores — altura ajustable con drag
 let panelHeightRatio = 0.28;   // porcentaje de la altura total
 const PANEL_H_MIN    = 80;     // px mínimo por panel
@@ -218,6 +225,7 @@ function saveState() {
         panelHeightRatio,
         indicators: (window.INDICATORS ? window.INDICATORS.getActive() : [])
           .map(a => ({ id: a.def.id, params: a.params })),
+        rulerCapital, rulerFeePct,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch (e) { console.warn('[state] No se pudo guardar:', e); }
@@ -256,10 +264,16 @@ function applySavedState() {
   }
   applyCandleColorVars();
   if (Number.isFinite(st.panelHeightRatio)) panelHeightRatio = st.panelHeightRatio;
+  if (Number.isFinite(st.rulerCapital) && st.rulerCapital >= 0) rulerCapital = st.rulerCapital;
+  if (Number.isFinite(st.rulerFeePct)  && st.rulerFeePct  >= 0) rulerFeePct  = st.rulerFeePct;
 
   // Reflejar en la UI
   const symEl = document.getElementById('sym-input');
   if (symEl) symEl.value = symbol;
+  const rulerCapEl = document.getElementById('ruler-capital-input');
+  if (rulerCapEl) rulerCapEl.value = rulerCapital;
+  const rulerFeeEl = document.getElementById('ruler-fee-input');
+  if (rulerFeeEl) rulerFeeEl.value = rulerFeePct;
   const daysSel = document.getElementById('days-select');
   if (daysSel) {
     daysSel.value = String(daysCount);
@@ -1230,19 +1244,36 @@ function draw() {
       ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.stroke();
     });
 
+    // ── PnL en USDT según el capital y la comisión configurados ──
+    // grossPnl: ganancia/pérdida bruta si se opera con "rulerCapital" USDT como margen/notional.
+    // feeUsdt : comisión de ida y vuelta (entrar + salir) sobre ese capital, a la tasa "rulerFeePct" (%).
+    // netPnl  : grossPnl - feeUsdt.
+    const grossPnl  = rulerCapital * (pPct / 100);
+    const feeUsdt   = rulerCapital * (rulerFeePct / 100);
+    const netPnl    = grossPnl - feeUsdt;
+    const netSign   = netPnl >= 0 ? '+' : '-';
+    const netCol    = netPnl >= 0 ? CANDLE_COLORS.up : CANDLE_COLORS.down;
+    const fmtUsd = v => Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
     const midX = (rx1 + rx2) / 2, midY = (ry1 + ry2) / 2;
     const lns = [
       { text: `${sign}${fmtPrice(Math.abs(pDiff))}`,                                   color: col,       bold: true,  size: 12 },
       { text: `${sign}${pPct.toFixed(2)}%`,                                             color: col,       bold: true,  size: 12 },
       { text: `${nBars} vela${nBars!==1?'s':''}  ·  ${timeDiffStr}`,                  color: '#848e9c', bold: false, size: 10 },
+      { text: `Capital: $${fmtUsd(rulerCapital)}`,                                     color: '#848e9c', bold: false, size: 10 },
+      { text: `PnL bruto: ${sign}$${fmtUsd(grossPnl)}`,                                color: col,       bold: false, size: 11 },
+      { text: `Comisión (${rulerFeePct.toFixed(2)}%): -$${fmtUsd(feeUsdt)}`,           color: '#ff5470', bold: false, size: 10 },
+      { text: `PnL neto: ${netSign}$${fmtUsd(netPnl)}`,                                color: netCol,    bold: true,  size: 12 },
     ];
     ctx.font = 'bold 12px monospace';
-    const panelW = Math.max(
-      ctx.measureText(lns[0].text).width,
-      ctx.measureText(lns[1].text).width,
-      (() => { ctx.font = '10px monospace'; return ctx.measureText(lns[2].text).width; })()
-    ) + 28;
-    const panelH = 62;
+    let panelW = 0;
+    lns.forEach(({ text, bold, size }) => {
+      ctx.font = `${bold?'bold ':''}${size}px monospace`;
+      panelW = Math.max(panelW, ctx.measureText(text).width);
+    });
+    panelW += 28;
+    let panelH = 12;
+    lns.forEach(({ size }) => { panelH += size + 5; });
     let px2 = Math.max(PADL + 4, Math.min(W - PADR - panelW - 4, midX - panelW/2));
     let py2 = Math.max(PADT + 4, Math.min(PADT + chartH - panelH - 4, midY - panelH/2));
     ctx.fillStyle = 'rgba(0,0,0,0.4)';
@@ -1742,6 +1773,26 @@ rulerBtn.addEventListener('click', () => {
   rulerMode = !rulerMode; rulerBtn.classList.toggle('active', rulerMode);
   if (!rulerMode) { rulerActive = false; rulerLocked = false; rulerTempActive = false; rulerStartX = -1; rulerEndX = -1; draw(); }
 });
+
+/* ── Calculadora de la regla: capital y comisión editables ── */
+const rulerCapitalInput = document.getElementById('ruler-capital-input');
+const rulerFeeInput     = document.getElementById('ruler-fee-input');
+if (rulerCapitalInput) {
+  rulerCapitalInput.addEventListener('input', () => {
+    const v = parseFloat(rulerCapitalInput.value);
+    rulerCapital = Number.isFinite(v) && v >= 0 ? v : 0;
+    saveState();
+    if (rulerMode) draw();
+  });
+}
+if (rulerFeeInput) {
+  rulerFeeInput.addEventListener('input', () => {
+    const v = parseFloat(rulerFeeInput.value);
+    rulerFeePct = Number.isFinite(v) && v >= 0 ? v : 0;
+    saveState();
+    if (rulerMode) draw();
+  });
+}
 
 window.addEventListener('keydown', e => {
   if (document.activeElement === symInput) return;

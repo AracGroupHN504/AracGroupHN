@@ -2036,6 +2036,7 @@ function drawSessionBar() {
   sessCv.style.width  = W + 'px';
   sessCv.style.height = H + 'px';
   const c = sessCtx;
+  c.setTransform(1, 0, 0, 1, 0, 0);
   c.scale(dpr, dpr);
   c.clearRect(0, 0, W, H);
 

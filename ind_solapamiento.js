@@ -47,6 +47,8 @@
   const SOLAPE_CALC_KEY = 'vm_solape_calc_v1';
   let solapeCapital = 1000;
   let solapeFeePct  = 0.20;
+  let solapeRangeMonths = null; // null = "Todo". 1, 3, 6, 9, 12 = meses hacia atrás desde la operación más reciente
+  let solapeInvert = false; // true = invierte la dirección simulada (LONG↔SHORT) solo para la tabla/export
   (function loadCalcSettings() {
     try {
       const raw = localStorage.getItem(SOLAPE_CALC_KEY);
@@ -54,12 +56,21 @@
       const st = JSON.parse(raw);
       if (Number.isFinite(st.capital) && st.capital >= 0) solapeCapital = st.capital;
       if (Number.isFinite(st.feePct)  && st.feePct  >= 0) solapeFeePct  = st.feePct;
+      if (st.rangeMonths === null || Number.isFinite(st.rangeMonths)) solapeRangeMonths = st.rangeMonths;
+      if (typeof st.invert === 'boolean') solapeInvert = st.invert;
     } catch (e) {}
   })();
   function saveCalcSettings() {
     try {
-      localStorage.setItem(SOLAPE_CALC_KEY, JSON.stringify({ capital: solapeCapital, feePct: solapeFeePct }));
+      localStorage.setItem(SOLAPE_CALC_KEY, JSON.stringify({ capital: solapeCapital, feePct: solapeFeePct, rangeMonths: solapeRangeMonths, invert: solapeInvert }));
     } catch (e) {}
+  }
+
+  // Resta "n" meses (calendario, no 30 días fijos) a un timestamp en ms.
+  function monthsAgoTs(ts, n) {
+    const d = new Date(ts);
+    d.setUTCMonth(d.getUTCMonth() - n);
+    return d.getTime();
   }
 
   function calcSolapamiento(candles, p) {
@@ -78,12 +89,21 @@
       if (gapPct < minGapPct) continue;
 
       const up = curOpen > prevClose; // hueco hacia arriba
+
+      // Solo cuenta como solapamiento si el color de la vela ANTERIOR
+      // coincide con la dirección del hueco:
+      //  - vela anterior VERDE (alcista) + hueco hacia ARRIBA  → válido
+      //  - vela anterior ROJA  (bajista) + hueco hacia ABAJO   → válido
+      //  - cualquier otra combinación (o vela anterior doji)   → se descarta
+      const prevBullish = prev.c > prev.o;
+      const prevBearish = prev.c < prev.o;
+      if (!((up && prevBullish) || (!up && prevBearish))) continue;
+
       const rawLow  = Math.min(curOpen, prevClose);
       const rawHigh = Math.max(curOpen, prevClose);
 
-      // Cuerpos reales de ambas velas (no solo su close/open)
+      // Cuerpo real de la vela ANTERIOR (ya cerrada, fija para siempre)
       const prevBody = [Math.min(prev.o, prev.c), Math.max(prev.o, prev.c)];
-      const curBody  = [Math.min(cur.o,  cur.c),  Math.max(cur.o,  cur.c)];
 
       // % de cuerpo de la vela siguiente (cur), calculado solo sobre esa
       // vela — no se compara contra el tamaño del hueco.
@@ -108,11 +128,15 @@
         ? (cur.h - cur.o) / cur.o * CAPITAL
         : (cur.o - cur.l) / cur.o * CAPITAL;
 
-      // Recorta el hueco: si una parte ya está dentro del cuerpo de la
-      // vela anterior o de la siguiente, no cuenta como hueco real.
+      // Recorta el hueco solo con el cuerpo de la vela ANTERIOR (ya
+      // cerrada). NO se recorta con el cuerpo de la vela actual: si se
+      // rellena o no con el precio en desarrollo NO se considera para
+      // decidir si el solapamiento existe. El criterio es únicamente
+      // cierre anterior vs apertura actual (+ color de la vela anterior,
+      // ya validado arriba). Como el open de la vela en desarrollo no
+      // cambia, esta geometría queda fija desde el primer tick.
       let segments = [[rawLow, rawHigh]];
       segments = subtractBody(segments, prevBody);
-      segments = subtractBody(segments, curBody);
 
       segments.forEach(([lo, hi]) => {
         if (hi - lo <= 0) return;
@@ -207,7 +231,7 @@
     name: 'Solapamiento — Hueco Cierre/Apertura',
     shortName: 'Solapamiento',
     type: 'overlay',
-    defaultOn: true,
+    defaultOn: false,
     params: [
       { key: 'minGapPct',   label: 'Hueco mínimo (%)',       type: 'number', default: 0,  min: 0, max: 5, step: 0.01 },
       { key: 'colorArriba', label: 'Color hueco hacia arriba', type: 'color', default: '#00ff00' },
@@ -316,6 +340,27 @@
       #solape-table td { padding: 7px 8px; border-bottom: 1px solid #2b2f3644; color: #eaecef; }
       #solape-table tr:hover td { background: #1a1e24; }
       #solape-empty { color: #848e9c; font-size: 12px; padding: 20px 0; text-align: center; }
+      #solape-range-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+      #solape-range-bar .solape-range-label { color: #848e9c; font-size: 10px; text-transform: uppercase; letter-spacing: .4px; margin-right: 2px; }
+      .solape-range-btn {
+        background: #1e2329; border: 1px solid #2b2f36; color: #eaecef;
+        border-radius: 5px; font-size: 11px; padding: 5px 10px; cursor: pointer;
+      }
+      .solape-range-btn:hover { border-color: #f0b90b; }
+      .solape-range-btn.active { background: #f0b90b22; border-color: #f0b90b; color: #f0b90b; font-weight: 700; }
+      .solape-range-note { color: #6b7280; font-size: 10px; margin-left: 4px; }
+      .solape-invert-wrap {
+        display: inline-flex; align-items: center; gap: 5px; font-size: 11px;
+        color: #eaecef; cursor: pointer; user-select: none;
+        background: #1e2329; border: 1px solid #2b2f36; border-radius: 5px; padding: 5px 9px;
+      }
+      .solape-invert-wrap:hover { border-color: #f0b90b; }
+      .solape-invert-wrap input { cursor: pointer; }
+      .solape-invert-badge {
+        background: #f0b90b1a; border: 1px solid #f0b90b55; color: #f0b90b;
+        border-radius: 6px; padding: 6px 10px; font-size: 11px; font-weight: 700;
+        margin-bottom: 10px;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -336,10 +381,14 @@
               <label for="solape-fee-input">Fee %</label>
               <input type="number" id="solape-fee-input" value="0.20" min="0" step="0.01" />
             </div>
+            <label class="solape-invert-wrap" title="Simula la operación al revés: donde antes era LONG pasa a ser SHORT, y donde era SHORT pasa a ser LONG">
+              <input type="checkbox" id="solape-invert-check" /> 🔄 Invertir LONG↔SHORT
+            </label>
             <button id="solape-export-btn" class="tf-btn" type="button">📤 Exportar a Excel</button>
             <button id="solape-modal-close">✕</button>
           </div>
         </div>
+        <div id="solape-range-bar" title="Filtra la lista tomando como punto de partida la operación más reciente"></div>
         <div id="solape-table-wrap"></div>
       </div>
     `;
@@ -364,6 +413,14 @@
       saveCalcSettings();
       renderTable();
     });
+
+    const invertCheck = document.getElementById('solape-invert-check');
+    invertCheck.checked = solapeInvert;
+    invertCheck.addEventListener('change', () => {
+      solapeInvert = invertCheck.checked;
+      saveCalcSettings();
+      renderTable();
+    });
   }
 
   function openModal() {
@@ -379,10 +436,67 @@
 
   let _lastRows = []; // filas ya formateadas, usadas también para exportar
 
+  const RANGE_OPTIONS = [
+    { key: '1',    label: '1 mes',   months: 1  },
+    { key: '3',    label: '3 meses', months: 3  },
+    { key: '6',    label: '6 meses', months: 6  },
+    { key: '9',    label: '9 meses', months: 9  },
+    { key: '12',   label: '1 año',   months: 12 },
+    { key: 'todo', label: 'Todo',    months: null },
+  ];
+
+  // Dibuja la barra de botones de rango y devuelve los gaps ya filtrados
+  // según la opción activa, tomando como punto de partida la operación
+  // (vela) más reciente detectada — no la fecha de hoy.
+  function renderRangeBarAndFilter(gaps) {
+    const bar = document.getElementById('solape-range-bar');
+    if (!gaps.length) {
+      if (bar) bar.innerHTML = '';
+      return gaps;
+    }
+
+    // Timestamp de la vela más reciente entre todos los huecos detectados
+    let mostRecentTs = -Infinity;
+    gaps.forEach(g => {
+      const cur = _lastCandles ? _lastCandles[g.idx2] : null;
+      if (cur && cur.t > mostRecentTs) mostRecentTs = cur.t;
+    });
+
+    let filtered = gaps;
+    if (solapeRangeMonths !== null && Number.isFinite(mostRecentTs)) {
+      const cutoff = monthsAgoTs(mostRecentTs, solapeRangeMonths);
+      filtered = gaps.filter(g => {
+        const cur = _lastCandles ? _lastCandles[g.idx2] : null;
+        return cur && cur.t >= cutoff;
+      });
+    }
+
+    if (bar) {
+      const btns = RANGE_OPTIONS.map(opt => {
+        const isActive = (opt.months === null && solapeRangeMonths === null) || (opt.months === solapeRangeMonths);
+        return `<button type="button" class="solape-range-btn${isActive ? ' active' : ''}" data-range="${opt.key}">${opt.label}</button>`;
+      }).join('');
+      bar.innerHTML = `<span class="solape-range-label">📅 Rango (desde la más reciente):</span>${btns}
+        <span class="solape-range-note">${filtered.length} de ${gaps.length} operaciones</span>`;
+
+      bar.querySelectorAll('.solape-range-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const opt = RANGE_OPTIONS.find(o => o.key === btn.dataset.range);
+          solapeRangeMonths = opt.months;
+          saveCalcSettings();
+          renderTable();
+        });
+      });
+    }
+
+    return filtered;
+  }
+
   function renderTable() {
     const wrap = document.getElementById('solape-table-wrap');
     const state = window.INDICATORS.getActive().find(x => x.def.id === 'solapamiento');
-    const gaps = (state && state.series && state.series.gaps) || [];
+    const allGaps = (state && state.series && state.series.gaps) || [];
+    const gaps = renderRangeBarAndFilter(allGaps);
 
     if (!gaps.length) {
       _lastRows = [];
@@ -397,23 +511,38 @@
     // inverso (más reciente arriba) pero cada fila conserva su número real.
     _lastRows = gaps.map((g, i) => {
       const cur = _lastCandles ? _lastCandles[g.idx2] : null;
-      // PnL bruto recalculado con el capital seleccionado (no el de calcSolapamiento,
-      // que quedó fijo en 1000 para el dibujo del gráfico).
-      const pnlClose = g.up
+      // Lado simulado de la operación: normalmente sigue la dirección del
+      // hueco (Arriba→LONG, Abajo→SHORT). Con "Invertir" activado, se da
+      // vuelta: Arriba→SHORT, Abajo→LONG.
+      const side = solapeInvert ? (g.up ? 'SHORT' : 'LONG') : (g.up ? 'LONG' : 'SHORT');
+      const isLong = side === 'LONG';
+
+      // O→C: ganancia/pérdida real de comprar(LONG)/vender(SHORT) en el
+      // open y cerrar en el close de la vela. Acá SÍ es la negación directa.
+      const pnlClose = isLong
         ? (cur.c - cur.o) / cur.o * solapeCapital
         : (cur.o - cur.c) / cur.o * solapeCapital;
-      const pnlExt = g.up
+
+      // O→L/H: mejor salida posible para ESE lado — para LONG es el
+      // High (mejor precio de venta), para SHORT es el Low (mejor precio
+      // de recompra). NO es la negación del valor original: al invertir,
+      // cambia el extremo de la vela que se usa, no solo el signo.
+      const pnlExt = isLong
         ? (cur.h - cur.o) / cur.o * solapeCapital
         : (cur.o - cur.l) / cur.o * solapeCapital;
+      const extLabel = isLong ? 'Open→High' : 'Open→Low';
+      const extPct = isLong
+        ? (cur.h - cur.o) / cur.o * 100
+        : (cur.o - cur.l) / cur.o * 100;
       return {
         num: i + 1,
         fecha: cur ? fmtFechaHoraLocal(cur.t) : '—',
         sesion: cur && cur.sessionName ? cur.sessionName : '—',
-        dir: g.up ? 'Arriba' : 'Abajo',
+        side,
         gapPct: g.gapPct,
         bodyPct: g.bodyPct,
-        extLabel: g.extLabel,
-        extPct: g.extPct,
+        extLabel,
+        extPct,
         pnlClose,
         pnlExt,
         comision: commission,
@@ -427,7 +556,7 @@
     }).reverse();
 
     const rows = _lastRows.map(r => {
-      const dirColor = r.dir === 'Arriba' ? '#9c6cff' : '#ffa94d';
+      const dirColor = r.side === 'LONG' ? '#9c6cff' : '#ffa94d';
       const pnlCloseColor = r.pnlClose >= 0 ? '#26d994' : '#ff5470';
       const pnlExtColor   = r.pnlExt   >= 0 ? '#26d994' : '#ff5470';
       const netCloseColor = r.netClose >= 0 ? '#26d994' : '#ff5470';
@@ -437,7 +566,7 @@
           <td>${r.num}</td>
           <td>${r.fecha}</td>
           <td>${r.sesion}</td>
-          <td style="color:${dirColor}">${r.dir === 'Arriba' ? '▲ LONG' : '▼ SHORT'}</td>
+          <td style="color:${dirColor}">${r.side === 'LONG' ? '▲ LONG' : '▼ SHORT'}</td>
           <td>${r.gapPct.toFixed(2)}%</td>
           <td>${r.bodyPct.toFixed(2)}%</td>
           <td>${r.extLabel}: ${r.extPct.toFixed(2)}%</td>
@@ -460,6 +589,7 @@
     const n = _lastRows.length;
     let winClose = 0, lossClose = 0, winExt = 0, lossExt = 0;
     let sumPnlClose = 0, sumPnlExt = 0, sumComision = 0, sumNetClose = 0, sumNetExt = 0;
+    let sumLossClose = 0, sumLossExt = 0; // suma de solo las operaciones perdedoras (neto < 0)
     _lastRows.forEach(r => {
       if (r.netClose > 0) winClose++; else lossClose++;
       if (r.netExt   > 0) winExt++;   else lossExt++;
@@ -468,6 +598,8 @@
       sumComision += r.comision;
       sumNetClose += r.netClose;
       sumNetExt   += r.netExt;
+      if (r.netClose < 0) sumLossClose += r.netClose;
+      if (r.netExt   < 0) sumLossExt   += r.netExt;
     });
     const winRateClose = n ? (winClose / n * 100) : 0;
     const winRateExt   = n ? (winExt   / n * 100) : 0;
@@ -478,6 +610,7 @@
 
     const totalsBarHtml = `
       <div id="solape-totals-bar">
+        ${solapeInvert ? '<div class="solape-invert-badge">🔄 Escenario INVERTIDO: donde el hueco era LONG ahora se simula SHORT, y viceversa</div>' : ''}
         <div id="solape-totals-row">
           <span id="solape-totals-label">TOTAL (${n} operaciones)</span>
           <span class="solape-totals-vals">
@@ -494,12 +627,14 @@
             <span class="solape-stat solape-stat-win">✅ ${winClose} ganadoras</span>
             <span class="solape-stat solape-stat-loss">❌ ${lossClose} perdedoras</span>
             <span class="solape-stat">Win rate: ${winRateClose.toFixed(1)}%</span>
+            <span class="solape-stat solape-stat-loss">Suma pérdidas: ${sumLossClose.toFixed(2)} USDT</span>
           </div>
           <div class="solape-stat-group">
             <span class="solape-stat-label">Extremo (O→L/H):</span>
             <span class="solape-stat solape-stat-win">✅ ${winExt} ganadoras</span>
             <span class="solape-stat solape-stat-loss">❌ ${lossExt} perdedoras</span>
             <span class="solape-stat">Win rate: ${winRateExt.toFixed(1)}%</span>
+            <span class="solape-stat solape-stat-loss">Suma pérdidas: ${sumLossExt.toFixed(2)} USDT</span>
           </div>
         </div>
       </div>
@@ -543,7 +678,7 @@
     const lines = [headers.join(';')];
     _lastRows.forEach(r => {
       lines.push([
-        r.num, r.fecha, r.sesion, (r.dir === 'Arriba' ? 'LONG' : 'SHORT'),
+        r.num, r.fecha, r.sesion, r.side,
         r.gapPct.toFixed(2) + '%', r.bodyPct.toFixed(2) + '%',
         r.extLabel + ': ' + r.extPct.toFixed(2) + '%',
         fp(r.o), fp(r.h), fp(r.l), fp(r.c),
@@ -559,6 +694,7 @@
     const n = _lastRows.length;
     let winClose = 0, lossClose = 0, winExt = 0, lossExt = 0;
     let sumPnlClose = 0, sumPnlExt = 0, sumComision = 0, sumNetClose = 0, sumNetExt = 0;
+    let sumLossClose = 0, sumLossExt = 0; // suma de solo las operaciones perdedoras (neto < 0)
     _lastRows.forEach(r => {
       if (r.netClose > 0) winClose++; else lossClose++;
       if (r.netExt   > 0) winExt++;   else lossExt++;
@@ -567,14 +703,16 @@
       sumComision += r.comision;
       sumNetClose += r.netClose;
       sumNetExt   += r.netExt;
+      if (r.netClose < 0) sumLossClose += r.netClose;
+      if (r.netExt   < 0) sumLossExt   += r.netExt;
     });
     lines.push('');
     lines.push([`TOTAL (${n} operaciones)`, '', '', '', '', '', '', '', '', '', '',
       sumPnlClose.toFixed(2) + ' USDT', sumPnlExt.toFixed(2) + ' USDT',
       '-' + sumComision.toFixed(2) + ' USDT',
       sumNetClose.toFixed(2) + ' USDT', sumNetExt.toFixed(2) + ' USDT'].join(';'));
-    lines.push([`Ganadoras O→C: ${winClose}`, `Perdedoras O→C: ${lossClose}`].join(';'));
-    lines.push([`Ganadoras O→L/H: ${winExt}`, `Perdedoras O→L/H: ${lossExt}`].join(';'));
+    lines.push([`Ganadoras O→C: ${winClose}`, `Perdedoras O→C: ${lossClose}`, `Suma pérdidas O→C: ${sumLossClose.toFixed(2)} USDT`].join(';'));
+    lines.push([`Ganadoras O→L/H: ${winExt}`, `Perdedoras O→L/H: ${lossExt}`, `Suma pérdidas O→L/H: ${sumLossExt.toFixed(2)} USDT`].join(';'));
 
     const csv = '\uFEFF' + lines.join('\r\n'); // BOM para que Excel detecte UTF-8 bien
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });

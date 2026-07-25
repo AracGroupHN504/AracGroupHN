@@ -280,8 +280,18 @@ function applySavedState() {
   if (typeof updateFooter === 'function') updateFooter();
   if (typeof updateLegend === 'function') updateLegend();
 
-  // Restaurar indicadores activos (indicators.js ya registró todos los defs)
+  // Restaurar indicadores activos (indicators.js ya registró todos los defs).
+  // La lista guardada es AUTORITATIVA: primero apaga cualquier indicador que
+  // haya quedado activo por su "defaultOn" (ej. Solapamiento) y no esté en
+  // la lista guardada — así, tras "Restablecer" (que guarda indicators: []),
+  // no queda ningún indicador encendido por su cuenta.
   if (Array.isArray(st.indicators) && window.INDICATORS) {
+    window.INDICATORS.getAll().forEach(d => {
+      const sigueGuardado = st.indicators.some(s => s.id === d.id);
+      if (window.INDICATORS.isActive(d.id) && !sigueGuardado) {
+        window.INDICATORS.deactivate(d.id);
+      }
+    });
     st.indicators.forEach(({ id, params }) => {
       if (window.INDICATORS.getAll().some(d => d.id === id)) {
         window.INDICATORS.activate(id, params);
@@ -310,8 +320,9 @@ function updateJumpLatestBtn() {
 }
 if (jumpLatestBtn) {
   jumpLatestBtn.addEventListener('click', () => {
+    manualScale = false;
     snapToEnd = true;
-    draw();
+    scheduleDraw();
   });
 }
 const wsDot   = document.getElementById('ws-dot');
@@ -322,10 +333,14 @@ chartResetBtn.addEventListener('click', () => {
   const ok = confirm('Esto restablece el zoom, la escala del gráfico y toda la configuración guardada (símbolo, sesiones, colores, indicadores activos, capital/comisión de Solapamientos), volviendo a los valores originales del código. ¿Continuar?');
   if (!ok) return;
   try {
-    localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(PRESETS_KEY);
     localStorage.removeItem(PRESET1_SYNC_KEY);
     localStorage.removeItem('vm_solape_calc_v1');
+    localStorage.removeItem('vm_orb_calc_v1');
+    // No se borra STORAGE_KEY por completo: se deja un estado mínimo con
+    // indicators: [] explícito, para que ningún indicador con defaultOn:true
+    // (ej. Solapamiento) se vuelva a encender solo al recargar.
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ indicators: [] }));
   } catch (e) { console.warn('[reset] No se pudo limpiar localStorage:', e); }
   location.reload();
 });
@@ -779,7 +794,7 @@ async function pollTick() {
       return;
     }
     window.rawCandles = rawCandles;
-    { const W2=cv.width/devicePixelRatio, vis=candles.length, bw=Math.max(1,Math.min(200,((W2-8-84)/Math.min(vis,500))*zoomLevel)), st=bw+Math.max(1,bw*0.15), maxC=Math.max(0,vis*st-(W2-8-84)+st*15); if(camX>=maxC-st*3) snapToEnd=true; }
+    { const W2=cv.width/devicePixelRatio, vis=candles.length, bw=Math.max(1,Math.min(200,((W2-8-84)/Math.min(vis,500))*zoomLevel)), st=bw+Math.max(1,bw*0.15), visW2=W2-8-84, maxC=Math.max(0,vis*st-visW2+visW2/2); if(camX>=maxC-st*3) snapToEnd=true; }
     draw();
 
     const r2 = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=' + symbol);
@@ -856,7 +871,7 @@ function draw() {
   const barW = Math.max(1, Math.min(200, ((W - PADL - PADR) / Math.min(vis, 500)) * zoomLevel));
   const gap  = Math.max(1, barW * 0.15);
   const step = barW + gap;
-  const maxCam = Math.max(0, vis * step - (W - PADL - PADR) + step * 15);
+  const maxCam = Math.max(0, vis * step - (W - PADL - PADR) + (W - PADL - PADR) / 2);
   if (snapToEnd || camX < 0) { camX = maxCam; if (candles.length) snapToEnd = false; }
   if (camX >= maxCam - step * 2) camX = maxCam;
   camX = Math.max(0, Math.min(maxCam, camX));
@@ -1687,6 +1702,9 @@ cv.addEventListener('dblclick', e => {
   }
   // Doble clic en cualquier parte del gráfico → vuelve al auto-ajuste vertical
   manualScale = false;
+  // ...y también recentra la vista en la vela en desarrollo (más reciente),
+  // igual que el botón "»", para que quede visible de inmediato.
+  snapToEnd = true;
   scheduleDraw();
 });
 

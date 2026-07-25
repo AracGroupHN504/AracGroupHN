@@ -1537,6 +1537,7 @@
     if (!anchors.length) return { segs: {} };
 
     const segs = { high: [], low: [] };
+    const signals = [];
     for (let k = 0; k < anchors.length; k++) {
       const idx    = anchors[k];
       const endIdx = (k + 1 < anchors.length) ? anchors[k + 1] - 1 : n - 1;
@@ -1553,9 +1554,32 @@
 
       segs.high.push({ startIdx: idx, endIdx, price: hi });
       segs.low.push({ startIdx: idx, endIdx, price: lo });
+
+      // Señal: vela siguiente al ancla, según su precio de APERTURA
+      // (no su high/low ni cierre) comparado contra las líneas ORB de este día.
+      const nextIdx = idx + 1;
+      if (nextIdx < n) {
+        const c2 = candles[nextIdx];
+        const openNext = c2.o;
+        let tipo = null;
+        if (openNext > hi) tipo = 'long';
+        else if (openNext < lo) tipo = 'short';
+        if (tipo) {
+          const lineaRota = tipo === 'long' ? hi : lo;
+          signals.push({
+            idx: nextIdx,
+            tipo,
+            price: openNext,
+            t: c2.t, o: c2.o, h: c2.h, l: c2.l, c: c2.c,
+            sessionLabel: esModoSesion ? (c.sessionName || null) : null,
+            lineaRota,
+            distanciaPct: Math.abs(openNext - lineaRota) / lineaRota * 100,
+          });
+        }
+      }
     }
 
-    return { segs };
+    return { segs, signals };
   }
 
   function drawORB(ctx, series, layout, p) {
@@ -1565,9 +1589,10 @@
 
     const colorHigh = p.colorHigh || '#26d994';
     const colorLow  = p.colorLow  || '#ff5470';
+    const esOpenClose = p.tipoOrb === 'openclose';
     const styles = {
-      high: { color: colorHigh, label: 'ORB High' },
-      low:  { color: colorLow,  label: 'ORB Low'  },
+      high: { color: colorHigh, label: esOpenClose ? 'ORB Open' : 'ORB High' },
+      low:  { color: colorLow,  label: esOpenClose ? 'ORB Close' : 'ORB Low'  },
     };
 
     ctx.save();
@@ -1605,6 +1630,27 @@
         ctx.fillText(`${st.label} ${window.INDICATORS.fmtPrice(seg.price)}`, xLbl, y - 3);
       });
     });
+
+    // Señales LONG/SHORT (vela siguiente al ancla, según su open)
+    if (series.signals && series.signals.length) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(PADL, PADT, W - PADL - PADR, chartH);
+      ctx.clip();
+      series.signals.forEach(sig => {
+        if (sig.idx < lo || sig.idx > hi) return;
+        const x = barX(sig.idx) + barW / 2;
+        const y = py(sig.price);
+        const esLong = sig.tipo === 'long';
+        const color = esLong ? (p.colorHigh || '#26d994') : (p.colorLow || '#ff5470');
+        const texto = esLong ? '▲ LONG' : '▼ SHORT';
+        ctx.font = 'bold 10px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = color;
+        ctx.fillText(texto, x, esLong ? y - 8 : y + 14);
+      });
+      ctx.restore();
+    }
   }
 
   window.INDICATORS.register({
@@ -1663,5 +1709,468 @@
     calc: calcORB,
     draw: drawORB,
   });
+
+  /* ═══════════════════════════════════════════════════════════════════
+     PANEL — pestaña con la lista de señales ORB detectadas
+     Igual estilo/estructura que el panel de Solapamiento: botón propio
+     en la topbar que abre un modal con tabla, capital/comisión
+     simulados, totales y exportación a CSV.
+  ═══════════════════════════════════════════════════════════════════ */
+
+  const ORB_DISPLAY_OFFSET = -6; // UTC-6 (Tegucigalpa), igual que el resto de la app
+  const ORB_CALC_KEY = 'vm_orb_calc_v1';
+  let orbCapital = 1000;
+  let orbFeePct  = 0.20;
+  let orbRangeMonths = null; // null = "Todo". 1, 3, 6, 9, 12 = meses hacia atrás desde la señal más reciente
+  (function loadOrbCalcSettings() {
+    try {
+      const raw = localStorage.getItem(ORB_CALC_KEY);
+      if (!raw) return;
+      const st = JSON.parse(raw);
+      if (Number.isFinite(st.capital) && st.capital >= 0) orbCapital = st.capital;
+      if (Number.isFinite(st.feePct)  && st.feePct  >= 0) orbFeePct  = st.feePct;
+      if (st.rangeMonths === null || Number.isFinite(st.rangeMonths)) orbRangeMonths = st.rangeMonths;
+    } catch (e) {}
+  })();
+  function saveOrbCalcSettings() {
+    try {
+      localStorage.setItem(ORB_CALC_KEY, JSON.stringify({ capital: orbCapital, feePct: orbFeePct, rangeMonths: orbRangeMonths }));
+    } catch (e) {}
+  }
+
+  function orbMonthsAgoTs(ts, n) {
+    const d = new Date(ts);
+    d.setUTCMonth(d.getUTCMonth() - n);
+    return d.getTime();
+  }
+
+  function orbTsToLocal(ts) {
+    return new Date(ts + ORB_DISPLAY_OFFSET * 3600000);
+  }
+  function orbFmtFechaHora(ts) {
+    const d = orbTsToLocal(ts);
+    const mo = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][d.getUTCMonth()];
+    const hh = String(d.getUTCHours()).padStart(2, '0');
+    const mm = String(d.getUTCMinutes()).padStart(2, '0');
+    return `${d.getUTCDate()} ${mo} ${d.getUTCFullYear()}, ${hh}:${mm}`;
+  }
+
+  function injectOrbPanelStyles() {
+    if (document.getElementById('orb-panel-style')) return;
+    const style = document.createElement('style');
+    style.id = 'orb-panel-style';
+    style.textContent = `
+      #orb-modal-overlay {
+        display: none; position: fixed; inset: 0; z-index: 1000;
+        background: rgba(0,0,0,0.82); align-items: center; justify-content: center;
+      }
+      #orb-modal-overlay.open { display: flex; }
+      #orb-modal {
+        background: #161a1e; border: 1px solid #2b2f36; border-radius: 12px;
+        padding: 26px 30px; width: 1400px; max-width: 98vw; max-height: 92vh;
+        overflow: auto; box-shadow: 0 16px 64px rgba(0,0,0,0.9);
+        font-family: inherit;
+      }
+      #orb-table-wrap { overflow-x: auto; }
+      #orb-modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; flex-wrap: wrap; gap: 10px; }
+      #orb-modal h2 { color: #f0b90b; font-size: 15px; font-weight: 700; letter-spacing: .5px; margin: 0; }
+      #orb-modal-close {
+        background: none; border: none; color: #848e9c; font-size: 20px;
+        cursor: pointer; line-height: 1; padding: 0 4px;
+      }
+      #orb-modal-close:hover { color: #eaecef; }
+      .orb-calc-wrap { display: inline-flex; align-items: center; gap: 4px; }
+      .orb-calc-wrap label { font-size: 10px; color: #848e9c; white-space: nowrap; }
+      #orb-capital-input, #orb-fee-input {
+        background: #1e2329; border: 1px solid #2b2f36; color: #eaecef;
+        border-radius: 5px; font-size: 11px; padding: 4px 6px; outline: none;
+      }
+      #orb-capital-input { width: 62px; }
+      #orb-fee-input { width: 50px; }
+      #orb-capital-input:hover, #orb-capital-input:focus,
+      #orb-fee-input:hover, #orb-fee-input:focus { border-color: #f0b90b; }
+      .orb-fee-cell { color: #ff5470 !important; background: #ff547014; font-weight: 600; }
+      #orb-table th.orb-fee-cell { color: #ff5470 !important; background: #ff547022; }
+      #orb-table tfoot td {
+        padding: 8px; border-top: 2px solid #2b2f36; font-weight: 700;
+        background: #1a1e24; position: sticky; bottom: 0;
+      }
+      #orb-totals-bar {
+        background: #0b0e11; border: 1px solid #2b2f36; border-radius: 8px;
+        padding: 10px 16px; margin-bottom: 12px;
+      }
+      #orb-totals-row {
+        display: flex; align-items: center; justify-content: space-between;
+        font-size: 12px; font-weight: 700; font-family: monospace;
+      }
+      #orb-totals-label { color: #eaecef; white-space: nowrap; }
+      .orb-totals-vals { display: flex; align-items: center; gap: 26px; }
+      .orb-totals-vals .orb-fee-cell { padding: 2px 8px; border-radius: 4px; }
+      #orb-stats-row {
+        display: flex; flex-wrap: wrap; gap: 18px; align-items: center;
+        margin-top: 8px; padding-top: 8px; border-top: 1px solid #2b2f36;
+        font-size: 12px;
+      }
+      .orb-stat-group { display: flex; align-items: center; gap: 8px; }
+      .orb-stat-label { color: #848e9c; font-size: 10px; text-transform: uppercase; letter-spacing: .4px; }
+      .orb-stat { color: #eaecef; font-weight: 600; }
+      .orb-stat-win  { color: #26d994; }
+      .orb-stat-loss { color: #ff5470; }
+      #orb-table { width: 100%; min-width: 980px; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+      #orb-table th {
+        text-align: left; color: #848e9c; font-weight: 600; font-size: 10px;
+        text-transform: uppercase; letter-spacing: .4px;
+        padding: 6px 8px; border-bottom: 1px solid #2b2f36; position: sticky; top: 0; background: #161a1e;
+      }
+      #orb-table td { padding: 7px 8px; border-bottom: 1px solid #2b2f3644; color: #eaecef; }
+      #orb-table tr:hover td { background: #1a1e24; }
+      #orb-empty { color: #848e9c; font-size: 12px; padding: 20px 0; text-align: center; }
+      #orb-range-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+      #orb-range-bar .orb-range-label { color: #848e9c; font-size: 10px; text-transform: uppercase; letter-spacing: .4px; margin-right: 2px; }
+      .orb-range-btn {
+        background: #1e2329; border: 1px solid #2b2f36; color: #eaecef;
+        border-radius: 5px; font-size: 11px; padding: 5px 10px; cursor: pointer;
+      }
+      .orb-range-btn:hover { border-color: #f0b90b; }
+      .orb-range-btn.active { background: #f0b90b22; border-color: #f0b90b; color: #f0b90b; font-weight: 700; }
+      .orb-range-note { color: #6b7280; font-size: 10px; margin-left: 4px; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function buildOrbModal() {
+    if (document.getElementById('orb-modal-overlay')) return;
+    injectOrbPanelStyles();
+    const overlay = document.createElement('div');
+    overlay.id = 'orb-modal-overlay';
+    overlay.innerHTML = `
+      <div id="orb-modal">
+        <div id="orb-modal-header">
+          <h2>📋 Señales ORB detectadas</h2>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <div class="orb-calc-wrap" title="Capital y comisión usados para calcular la ganancia simulada de cada fila">
+              <label for="orb-capital-input">Capital $</label>
+              <input type="number" id="orb-capital-input" value="1000" min="0" step="1" />
+              <label for="orb-fee-input">Fee %</label>
+              <input type="number" id="orb-fee-input" value="0.20" min="0" step="0.01" />
+            </div>
+            <button id="orb-export-btn" class="tf-btn" type="button">📤 Exportar a Excel</button>
+            <button id="orb-modal-close">✕</button>
+          </div>
+        </div>
+        <div id="orb-range-bar" title="Filtra la lista tomando como punto de partida la señal más reciente"></div>
+        <div id="orb-table-wrap"></div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeOrbModal(); });
+    document.getElementById('orb-modal-close').addEventListener('click', closeOrbModal);
+    document.getElementById('orb-export-btn').addEventListener('click', exportOrbCsv);
+
+    const capInput = document.getElementById('orb-capital-input');
+    const feeInput = document.getElementById('orb-fee-input');
+    capInput.value = orbCapital;
+    feeInput.value = orbFeePct;
+    capInput.addEventListener('input', () => {
+      const v = parseFloat(capInput.value);
+      orbCapital = Number.isFinite(v) && v >= 0 ? v : 0;
+      saveOrbCalcSettings();
+      renderOrbTable();
+    });
+    feeInput.addEventListener('input', () => {
+      const v = parseFloat(feeInput.value);
+      orbFeePct = Number.isFinite(v) && v >= 0 ? v : 0;
+      saveOrbCalcSettings();
+      renderOrbTable();
+    });
+  }
+
+  function openOrbModal() {
+    buildOrbModal();
+    renderOrbTable();
+    document.getElementById('orb-modal-overlay').classList.add('open');
+  }
+
+  function closeOrbModal() {
+    const overlay = document.getElementById('orb-modal-overlay');
+    if (overlay) overlay.classList.remove('open');
+  }
+
+  let _lastOrbRows = []; // filas ya formateadas, usadas también para exportar
+
+  const ORB_RANGE_OPTIONS = [
+    { key: '1',    label: '1 mes',   months: 1  },
+    { key: '3',    label: '3 meses', months: 3  },
+    { key: '6',    label: '6 meses', months: 6  },
+    { key: '9',    label: '9 meses', months: 9  },
+    { key: '12',   label: '1 año',   months: 12 },
+    { key: 'todo', label: 'Todo',    months: null },
+  ];
+
+  // Dibuja la barra de botones de rango y devuelve las señales ya filtradas
+  // según la opción activa, tomando como punto de partida la señal más
+  // reciente detectada — no la fecha de hoy.
+  function renderOrbRangeBarAndFilter(signals) {
+    const bar = document.getElementById('orb-range-bar');
+    if (!signals.length) {
+      if (bar) bar.innerHTML = '';
+      return signals;
+    }
+
+    const mostRecentTs = signals.reduce((max, s) => Math.max(max, s.t), -Infinity);
+
+    let filtered = signals;
+    if (orbRangeMonths !== null && Number.isFinite(mostRecentTs)) {
+      const cutoff = orbMonthsAgoTs(mostRecentTs, orbRangeMonths);
+      filtered = signals.filter(s => s.t >= cutoff);
+    }
+
+    if (bar) {
+      const btns = ORB_RANGE_OPTIONS.map(opt => {
+        const isActive = (opt.months === null && orbRangeMonths === null) || (opt.months === orbRangeMonths);
+        return `<button type="button" class="orb-range-btn${isActive ? ' active' : ''}" data-range="${opt.key}">${opt.label}</button>`;
+      }).join('');
+      bar.innerHTML = `<span class="orb-range-label">📅 Rango (desde la más reciente):</span>${btns}
+        <span class="orb-range-note">${filtered.length} de ${signals.length} señales</span>`;
+
+      bar.querySelectorAll('.orb-range-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const opt = ORB_RANGE_OPTIONS.find(o => o.key === btn.dataset.range);
+          orbRangeMonths = opt.months;
+          saveOrbCalcSettings();
+          renderOrbTable();
+        });
+      });
+    }
+
+    return filtered;
+  }
+
+  function renderOrbTable() {
+    const wrap = document.getElementById('orb-table-wrap');
+    const state = window.INDICATORS.getActive().find(x => x.def.id === 'orb');
+    const allSignals = (state && state.series && state.series.signals) || [];
+    const signals = renderOrbRangeBarAndFilter(allSignals);
+
+    if (!signals.length) {
+      _lastOrbRows = [];
+      wrap.innerHTML = '<div id="orb-empty">No hay señales ORB detectadas. Activa el indicador en el gráfico.</div>';
+      return;
+    }
+
+    const fp = window.INDICATORS.fmtPrice;
+    const commission = orbCapital * (orbFeePct / 100);
+
+    // Numeración cronológica (el más antiguo es #1), mostrado más reciente arriba.
+    _lastOrbRows = signals.map((sig, i) => {
+      const isLong = sig.tipo === 'long';
+      const pnlClose = isLong
+        ? (sig.c - sig.o) / sig.o * orbCapital
+        : (sig.o - sig.c) / sig.o * orbCapital;
+      const pnlExt = isLong
+        ? (sig.h - sig.o) / sig.o * orbCapital
+        : (sig.o - sig.l) / sig.o * orbCapital;
+      const extLabel = isLong ? 'Open→High' : 'Open→Low';
+      const extPct = isLong
+        ? (sig.h - sig.o) / sig.o * 100
+        : (sig.o - sig.l) / sig.o * 100;
+      return {
+        num: i + 1,
+        fecha: orbFmtFechaHora(sig.t),
+        sesion: sig.sessionLabel || '—',
+        side: isLong ? 'LONG' : 'SHORT',
+        distanciaPct: sig.distanciaPct,
+        extLabel,
+        extPct,
+        pnlClose,
+        pnlExt,
+        comision: commission,
+        netClose: pnlClose - commission,
+        netExt: pnlExt - commission,
+        o: sig.o, h: sig.h, l: sig.l, c: sig.c,
+      };
+    }).reverse();
+
+    const rows = _lastOrbRows.map(r => {
+      const dirColor = r.side === 'LONG' ? '#26d994' : '#ff5470';
+      const pnlCloseColor = r.pnlClose >= 0 ? '#26d994' : '#ff5470';
+      const pnlExtColor   = r.pnlExt   >= 0 ? '#26d994' : '#ff5470';
+      const netCloseColor = r.netClose >= 0 ? '#26d994' : '#ff5470';
+      const netExtColor   = r.netExt   >= 0 ? '#26d994' : '#ff5470';
+      return `
+        <tr>
+          <td>${r.num}</td>
+          <td>${r.fecha}</td>
+          <td>${r.sesion}</td>
+          <td style="color:${dirColor}">${r.side === 'LONG' ? '▲ LONG' : '▼ SHORT'}</td>
+          <td>${r.distanciaPct.toFixed(2)}%</td>
+          <td>${fp(r.o)}</td>
+          <td>${fp(r.h)}</td>
+          <td>${fp(r.l)}</td>
+          <td>${fp(r.c)}</td>
+          <td>${r.extLabel}: ${r.extPct.toFixed(2)}%</td>
+          <td style="color:${pnlCloseColor}">${r.pnlClose >= 0 ? '+' : ''}${r.pnlClose.toFixed(2)} USDT</td>
+          <td style="color:${pnlExtColor}">${r.pnlExt >= 0 ? '+' : ''}${r.pnlExt.toFixed(2)} USDT</td>
+          <td class="orb-fee-cell">-${r.comision.toFixed(2)} USDT</td>
+          <td style="color:${netCloseColor}">${r.netClose >= 0 ? '+' : ''}${r.netClose.toFixed(2)} USDT</td>
+          <td style="color:${netExtColor}">${r.netExt >= 0 ? '+' : ''}${r.netExt.toFixed(2)} USDT</td>
+        </tr>
+      `;
+    }).join('');
+
+    // ── Resumen: ganadoras/perdedoras (según neto) y sumatoria de cada columna ──
+    const n = _lastOrbRows.length;
+    let winClose = 0, lossClose = 0, winExt = 0, lossExt = 0;
+    let sumPnlClose = 0, sumPnlExt = 0, sumComision = 0, sumNetClose = 0, sumNetExt = 0;
+    let sumLossClose = 0, sumLossExt = 0;
+    _lastOrbRows.forEach(r => {
+      if (r.netClose > 0) winClose++; else lossClose++;
+      if (r.netExt   > 0) winExt++;   else lossExt++;
+      sumPnlClose += r.pnlClose;
+      sumPnlExt   += r.pnlExt;
+      sumComision += r.comision;
+      sumNetClose += r.netClose;
+      sumNetExt   += r.netExt;
+      if (r.netClose < 0) sumLossClose += r.netClose;
+      if (r.netExt   < 0) sumLossExt   += r.netExt;
+    });
+    const winRateClose = n ? (winClose / n * 100) : 0;
+    const winRateExt   = n ? (winExt   / n * 100) : 0;
+    const sumPnlCloseColor = sumPnlClose >= 0 ? '#26d994' : '#ff5470';
+    const sumPnlExtColor   = sumPnlExt   >= 0 ? '#26d994' : '#ff5470';
+    const sumNetCloseColor = sumNetClose >= 0 ? '#26d994' : '#ff5470';
+    const sumNetExtColor   = sumNetExt   >= 0 ? '#26d994' : '#ff5470';
+
+    const totalsBarHtml = `
+      <div id="orb-totals-bar">
+        <div id="orb-totals-row">
+          <span id="orb-totals-label">TOTAL (${n} señales)</span>
+          <span class="orb-totals-vals">
+            <span style="color:${sumPnlCloseColor}">${sumPnlClose >= 0 ? '+' : ''}${sumPnlClose.toFixed(2)} USDT</span>
+            <span style="color:${sumPnlExtColor}">${sumPnlExt >= 0 ? '+' : ''}${sumPnlExt.toFixed(2)} USDT</span>
+            <span class="orb-fee-cell">-${sumComision.toFixed(2)} USDT</span>
+            <span style="color:${sumNetCloseColor}">${sumNetClose >= 0 ? '+' : ''}${sumNetClose.toFixed(2)} USDT</span>
+            <span style="color:${sumNetExtColor}">${sumNetExt >= 0 ? '+' : ''}${sumNetExt.toFixed(2)} USDT</span>
+          </span>
+        </div>
+        <div id="orb-stats-row">
+          <div class="orb-stat-group">
+            <span class="orb-stat-label">Cierre (O→C):</span>
+            <span class="orb-stat orb-stat-win">✅ ${winClose} ganadoras</span>
+            <span class="orb-stat orb-stat-loss">❌ ${lossClose} perdedoras</span>
+            <span class="orb-stat">Win rate: ${winRateClose.toFixed(1)}%</span>
+            <span class="orb-stat orb-stat-loss">Suma pérdidas: ${sumLossClose.toFixed(2)} USDT</span>
+          </div>
+          <div class="orb-stat-group">
+            <span class="orb-stat-label">Extremo (O→L/H):</span>
+            <span class="orb-stat orb-stat-win">✅ ${winExt} ganadoras</span>
+            <span class="orb-stat orb-stat-loss">❌ ${lossExt} perdedoras</span>
+            <span class="orb-stat">Win rate: ${winRateExt.toFixed(1)}%</span>
+            <span class="orb-stat orb-stat-loss">Suma pérdidas: ${sumLossExt.toFixed(2)} USDT</span>
+          </div>
+        </div>
+      </div>
+    `;
+
+    wrap.innerHTML = `
+      ${totalsBarHtml}
+      <table id="orb-table">
+        <thead>
+          <tr>
+            <th>#</th><th>Fecha/Hora</th><th>Sesión</th><th>Señal</th><th>Distancia a línea</th>
+            <th>Open</th><th>High</th><th>Low</th><th>Close</th><th>% Open→Ext</th>
+            <th title="Ganancia bruta con ${orbCapital} USDT de capital">Bruta O→C</th>
+            <th title="Ganancia bruta con ${orbCapital} USDT de capital">Bruta O→L/H</th>
+            <th class="orb-fee-cell" title="Comisión de entrar + salir (${orbFeePct.toFixed(2)}% sobre ${orbCapital} USDT)">Comisión</th>
+            <th title="Ganancia neta = bruta − comisión">Neto O→C</th>
+            <th title="Ganancia neta = bruta − comisión">Neto O→L/H</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+        <tfoot>
+          <tr>
+            <td colspan="10">TOTAL (${n} señales · ✅ ${winClose} / ❌ ${lossClose})</td>
+            <td style="color:${sumPnlCloseColor}">${sumPnlClose >= 0 ? '+' : ''}${sumPnlClose.toFixed(2)} USDT</td>
+            <td style="color:${sumPnlExtColor}">${sumPnlExt >= 0 ? '+' : ''}${sumPnlExt.toFixed(2)} USDT</td>
+            <td class="orb-fee-cell">-${sumComision.toFixed(2)} USDT</td>
+            <td style="color:${sumNetCloseColor}">${sumNetClose >= 0 ? '+' : ''}${sumNetClose.toFixed(2)} USDT</td>
+            <td style="color:${sumNetExtColor}">${sumNetExt >= 0 ? '+' : ''}${sumNetExt.toFixed(2)} USDT</td>
+          </tr>
+        </tfoot>
+      </table>
+    `;
+  }
+
+  function exportOrbCsv() {
+    if (!_lastOrbRows.length) return;
+    const headers = ['#', 'Fecha/Hora', 'Sesión', 'Señal', 'Distancia a línea (%)', 'Open', 'High', 'Low', 'Close', 'Open→Ext',
+      `Gan. bruta Open→Close (${orbCapital} USDT)`, `Gan. bruta Open→Low/High (${orbCapital} USDT)`,
+      `Comisión (${orbFeePct.toFixed(2)}%)`, 'Neto Open→Close', 'Neto Open→Low/High'];
+    const fp = window.INDICATORS.fmtPrice;
+    const lines = [headers.join(';')];
+    _lastOrbRows.forEach(r => {
+      lines.push([
+        r.num, r.fecha, r.sesion, r.side,
+        r.distanciaPct.toFixed(2) + '%',
+        fp(r.o), fp(r.h), fp(r.l), fp(r.c),
+        r.extLabel + ': ' + r.extPct.toFixed(2) + '%',
+        r.pnlClose.toFixed(2) + ' USDT',
+        r.pnlExt.toFixed(2) + ' USDT',
+        '-' + r.comision.toFixed(2) + ' USDT',
+        r.netClose.toFixed(2) + ' USDT',
+        r.netExt.toFixed(2) + ' USDT',
+      ].join(';'));
+    });
+
+    const n = _lastOrbRows.length;
+    let winClose = 0, lossClose = 0, winExt = 0, lossExt = 0;
+    let sumPnlClose = 0, sumPnlExt = 0, sumComision = 0, sumNetClose = 0, sumNetExt = 0;
+    let sumLossClose = 0, sumLossExt = 0;
+    _lastOrbRows.forEach(r => {
+      if (r.netClose > 0) winClose++; else lossClose++;
+      if (r.netExt   > 0) winExt++;   else lossExt++;
+      sumPnlClose += r.pnlClose;
+      sumPnlExt   += r.pnlExt;
+      sumComision += r.comision;
+      sumNetClose += r.netClose;
+      sumNetExt   += r.netExt;
+      if (r.netClose < 0) sumLossClose += r.netClose;
+      if (r.netExt   < 0) sumLossExt   += r.netExt;
+    });
+    lines.push('');
+    lines.push([`TOTAL (${n} señales)`, '', '', '', '', '', '', '', '', '',
+      sumPnlClose.toFixed(2) + ' USDT', sumPnlExt.toFixed(2) + ' USDT',
+      '-' + sumComision.toFixed(2) + ' USDT',
+      sumNetClose.toFixed(2) + ' USDT', sumNetExt.toFixed(2) + ' USDT'].join(';'));
+    lines.push([`Ganadoras O→C: ${winClose}`, `Perdedoras O→C: ${lossClose}`, `Suma pérdidas O→C: ${sumLossClose.toFixed(2)} USDT`].join(';'));
+    lines.push([`Ganadoras O→L/H: ${winExt}`, `Perdedoras O→L/H: ${lossExt}`, `Suma pérdidas O→L/H: ${sumLossExt.toFixed(2)} USDT`].join(';'));
+
+    const csv = '\uFEFF' + lines.join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'orb_senales.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function addOrbPanelButton() {
+    if (document.getElementById('orb-list-btn')) return;
+    const host = document.querySelector('.topbar-right-group') || document.querySelector('.topbar');
+    if (!host) return;
+    const btn = document.createElement('button');
+    btn.className = 'tf-btn';
+    btn.id = 'orb-list-btn';
+    btn.type = 'button';
+    btn.title = 'Ver lista de señales ORB detectadas';
+    btn.textContent = '📋 ORB';
+    btn.addEventListener('click', openOrbModal);
+    host.appendChild(btn);
+  }
+
+  addOrbPanelButton();
 
 })();

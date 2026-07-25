@@ -121,7 +121,7 @@ select:hover, .tf-btn:hover { border-color: #f0b90b; }
 .stat { font-size: 11px; color: #848e9c; flex-shrink: 0; }
 .stat span { color: #eaecef; }
 
-#chart-wrap { position: relative; flex: 1; min-height: 0; }
+#chart-wrap { position: relative; flex: 1; min-height: 260px; }
 canvas#cv { display: block; width: 100%; height: 100%; }
 .loading {
   position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
@@ -362,4 +362,31 @@ canvas#cv { display: block; width: 100%; height: 100%; }
   background: #f0b90b22;
   border-color: #f0b90b;
   color: #f0b90b;
+}
+
+/* ── Pantallas de laptop pequeñas: el topbar/sesiones ya no se comen
+   el espacio del gráfico. La barra de temporalidades pasa a scroll
+   horizontal (una sola fila) y las barras de info/sesiones se
+   comprimen, para que #chart-wrap siempre tenga espacio real. ── */
+@media (max-height: 800px), (max-width: 1100px) {
+  #tf-bar {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    overflow-y: hidden;
+    max-width: 100%;
+    scrollbar-width: thin;
+    scrollbar-color: #2f343c transparent;
+  }
+  #tf-bar::-webkit-scrollbar { height: 5px; }
+  #tf-bar::-webkit-scrollbar-thumb { background: #2b2f36; border-radius: 8px; }
+
+  .topbar { padding: 5px 10px; gap: 6px; }
+  .info-bar { padding: 3px 10px; gap: 9px; }
+  #ind-chips-bar { padding: 3px 10px; min-height: 22px; }
+
+  #sess-legend { padding: 3px 10px 3px; gap: 2px; }
+  #sess-legend-top { gap: 7px; font-size: 9px; }
+  #sess-canvas-wrap { height: 70px; }
+
+  #chart-wrap { min-height: 200px; }
 }
